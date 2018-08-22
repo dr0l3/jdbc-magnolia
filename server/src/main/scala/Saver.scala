@@ -336,20 +336,20 @@ object EasyFinder {
 }
 
 trait EasyCreator[A] {
-  def createTable(a: A)(implicit xa: Transactor[IO]): Either[String, (String, String, IO[Int])]
+  def createTable()(implicit xa: Transactor[IO]): Either[String, (String, String, IO[Int])]
 }
 
 object EasyCreator {
   type Typeclass[T] = EasyCreator[T]
 
   def combine[T](ctx: CaseClass[Typeclass, T]): EasyCreator[T] = new EasyCreator[T] {
-    override def createTable(a: T)(implicit xa: doobie.Transactor[IO]): Either[String, (String, String, IO[Int])] = {
+    override def createTable()(implicit xa: doobie.Transactor[IO]): Either[String, (String, String, IO[Int])] = {
       // Find the tablename
       val tableName = SqlUtils.findTableName(ctx)
 
       // Find the id field
       val idField           = SqlUtils.findIdField(ctx)
-      val crudeType         = idField.typeclass.createTable(idField.dereference(a)).left.get
+      val crudeType         = idField.typeclass.createTable().left.get
       val refinedType       = if (crudeType.contains("INTEGER")) "SERIAL" else crudeType
       val idFieldDefinition = s"${SqlUtils.findFieldName(idField)} $refinedType"
 
@@ -357,25 +357,25 @@ object EasyCreator {
 
       // Partition remaining param into primitive and references
       val (primitive, reference) = remainingParams.partition { param =>
-        param.typeclass.createTable(param.dereference(a)).isLeft
+        param.typeclass.createTable().isLeft
       }
 
       // Create field definition for each field
       // If primitive
       val primitiveFieldDefintions = primitive.map { param =>
-        val fieldType = param.typeclass.createTable(param.dereference(a)).left.get
+        val fieldType = param.typeclass.createTable().left.get
         s"${SqlUtils.findFieldName(param)} ${fieldType}"
       }
 
       // If reference
       val referenceFieldDefinitions = reference.map { param =>
-        val (fieldType, _, _) = param.typeclass.createTable(param.dereference(a)).right.get
+        val (fieldType, _, _) = param.typeclass.createTable().right.get
         s"${SqlUtils.findFieldName(param)} ${fieldType}"
       }
 
       // Foreign keys
       val foreignKeyDefintions = reference.map { param =>
-        val (_, referenceIdCol, _) = param.typeclass.createTable(param.dereference(a)).right.get
+        val (_, referenceIdCol, _) = param.typeclass.createTable().right.get
         s"foreign key (${SqlUtils.findFieldName(param)}) references $referenceIdCol"
       }
 
@@ -386,7 +386,7 @@ object EasyCreator {
       ) ++ foreignKeyDefintions
       val tableDefinition = s"create table if not exists ${tableName} (${definitions.mkString(", ")})"
       val referencePrograms =
-        reference.map(param => param.typeclass.createTable(param.dereference(a)).right.get._3).toList
+        reference.map(param => param.typeclass.createTable().right.get._3).toList
       val res = Fragment.const(tableDefinition).updateWithLogHandler(LogHandler.jdkLogHandler).run.transact(xa)
       val all = for {
         _   <- referencePrograms.sequence
@@ -394,7 +394,7 @@ object EasyCreator {
       } yield omg
 
       Right(
-        (idField.typeclass.createTable(idField.dereference(a)).left.get,
+        (idField.typeclass.createTable().left.get,
          s"$tableName(${SqlUtils.findFieldName(idField)})",
          all)
       )
@@ -402,21 +402,21 @@ object EasyCreator {
   }
 
   def dispatch[T](ctx: SealedTrait[Typeclass, T]): EasyCreator[T] = new EasyCreator[T] {
-    override def createTable(a: T)(implicit xa: doobie.Transactor[IO]): Either[String, (String, String, IO[Int])] = ???
+    override def createTable()(implicit xa: doobie.Transactor[IO]): Either[String, (String, String, IO[Int])] = ???
   }
 
   implicit val intCreator = new EasyCreator[Int] {
-    override def createTable(a: Int)(implicit xa: doobie.Transactor[IO]): Either[String, (String, String, IO[Int])] =
+    override def createTable()(implicit xa: doobie.Transactor[IO]): Either[String, (String, String, IO[Int])] =
       Left("INTEGER")
   }
 
   implicit val strCreator = new EasyCreator[String] {
-    override def createTable(a: String)(implicit xa: doobie.Transactor[IO]): Either[String, (String, String, IO[Int])] =
+    override def createTable()(implicit xa: doobie.Transactor[IO]): Either[String, (String, String, IO[Int])] =
       Left("TEXT")
   }
 
   implicit val doubleCreator = new EasyCreator[Double] {
-    override def createTable(a: Double)(implicit xa: doobie.Transactor[IO]): Either[String, (String, String, IO[Int])] =
+    override def createTable()(implicit xa: doobie.Transactor[IO]): Either[String, (String, String, IO[Int])] =
       Left("FLOAT")
   }
 
@@ -541,7 +541,7 @@ object Saver extends App {
   val finder = EasyFinder.gen[Cabin]
 
   val prog = for {
-    _       <- creator5.createTable(testCabin).right.get._3
+    _       <- creator5.createTable().right.get._3
     startInternal = System.nanoTime()
     id      <- saver.save(testPerson).fold(s => IO(s"Derived unfinished sql: $s"), identity)
     id2     <- saver.save(testPerson2).fold(s => IO(s"Derived unfinished sql: $s"), identity)
