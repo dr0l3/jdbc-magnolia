@@ -1,7 +1,8 @@
 import java.nio.file.Paths
 
+import EasyUpdater.Typeclass
 import LetsDoThis.{ Default, TypeNameInfo }
-import SqlAnnotations.{ fieldName, id, tableName }
+import SqlAnnotations._
 import cats._
 import cats.data._
 import cats.effect._
@@ -172,18 +173,74 @@ object SqlUtils {
       }
       idParam.isDefined
     }.getOrElse(
-      throw new RuntimeException(s"No id field defined for type ${ctx.typeName}. Define one using the @id Annotation")
-    )
+      throw new RuntimeException(s"No id field defined for type ${ctx.typeName}. Define one using the @id Annotation"))
 
   def findTableName[Ty[_], T](ctx: CaseClass[Ty, T]): String =
     ctx.annotations.collectFirst {
       case SqlAnnotations.tableName(name) => name
     }.getOrElse(ctx.typeName.short)
+
+  def idTypeToString(ft: FieldType) = ft match {
+    case UUID => "TEXT"
+    case Integer => "SERIAL"
+    case Double => "FLOAT"
+  }
+}
+
+sealed trait FieldType
+case object UUID extends FieldType
+case object Integer extends FieldType
+case object Double extends FieldType
+
+case class TableName(val name: String) extends AnyVal
+
+trait IdFinder[A] {
+  def findId(): (Either[FieldType, (FieldType, String, String)], Map[String, Either[FieldType, (FieldType, String, String)]])
+}
+
+object IdFinder {
+  type Typeclass[T] = IdFinder[T]
+
+  def combine[T](ctx: CaseClass[Typeclass, T]): IdFinder[T] = new IdFinder[T] {
+    override def findId(): (Either[FieldType, (FieldType, String, String)], Map[String, Either[FieldType, (FieldType, String, String)]]) = {
+      val idField = SqlUtils.findIdField(ctx)
+      val remaining = ctx.parameters.filterNot(_ == idField)
+      val nonIdFieldStructure = remaining.map { param =>
+        val fieldName = SqlUtils.findFieldName(param)
+        val subStuff = param.typeclass.findId()._1
+        fieldName -> subStuff
+      }.toMap
+
+      val idFieldStructure = idField.typeclass.findId()._1
+      val ownIdFieldStructure = Right((idFieldStructure.left.get, SqlUtils.findTableName(ctx), SqlUtils.findFieldName(idField)))
+      (ownIdFieldStructure, nonIdFieldStructure)
+    }
+  }
+
+  def dispatch[T](ctx: SealedTrait[Typeclass, T]): IdFinder[T] = ???
+
+  implicit def gen[T]: IdFinder[T] = macro Magnolia.gen[T]
+
+  implicit val intUpdater: IdFinder[Int] = new IdFinder[Int] {
+    override def findId(): (Either[FieldType, (FieldType, String, String)], Map[String, Either[FieldType, (FieldType, String, String)]]) =
+      (Left(Integer), Map())
+  }
+
+  implicit val stringUpdater: IdFinder[String] = new IdFinder[String] {
+    override def findId(): (Either[FieldType, (FieldType, String, String)], Map[String, Either[FieldType, (FieldType, String, String)]]) =
+      (Left(UUID), Map())
+  }
+
+  implicit val doubleUpdater: IdFinder[Double] = new IdFinder[Double] {
+    override def findId(): (Either[FieldType, (FieldType, String, String)], Map[String, Either[FieldType, (FieldType, String, String)]]) =
+      (Left(Double), Map())
+  }
 }
 
 trait EasyUpdater[A] {
   def update(value: A)(implicit xa: Transactor[IO]): Either[String, IO[String]]
 }
+
 object EasyUpdater {
 
   type Typeclass[T] = EasyUpdater[T]
