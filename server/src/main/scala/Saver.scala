@@ -192,49 +192,51 @@ case object UUID extends FieldType
 case object Integer extends FieldType
 case object Double extends FieldType
 
-case class TableName(val name: String) extends AnyVal
+case class TableName(name: String) extends AnyVal
+case class FieldName(name: String) extends AnyVal
 
-trait IdFinder[A] {
-  def findId(): (Either[FieldType, (FieldType, String, String)], Map[String, Either[FieldType, (FieldType, String, String)]])
+trait FieldReference
+case class SimpleValue(fieldType: FieldType) extends FieldReference
+case class ObjectReference(fieldType: FieldType, tableName: TableName, fieldName: FieldName) extends FieldReference
+
+case class TableDescription(idField: FieldReference, additionalFields: List[(FieldName, FieldReference)])
+
+trait TableDescriber[A] {
+  def describe(): TableDescription
 }
 
-object IdFinder {
-  type Typeclass[T] = IdFinder[T]
+object TableDescriber {
+  type Typeclass[T] = TableDescriber[T]
 
-  def combine[T](ctx: CaseClass[Typeclass, T]): IdFinder[T] = new IdFinder[T] {
-    override def findId(): (Either[FieldType, (FieldType, String, String)], Map[String, Either[FieldType, (FieldType, String, String)]]) = {
-      val idField = SqlUtils.findIdField(ctx)
-      val remaining = ctx.parameters.filterNot(_ == idField)
-      val nonIdFieldStructure = remaining.map { param =>
-        val fieldName = SqlUtils.findFieldName(param)
-        val subStuff = param.typeclass.findId()._1
-        fieldName -> subStuff
-      }.toMap
+  def combine[T](ctx: CaseClass[Typeclass, T]): TableDescriber[T] = () => {
+    val tableName   = SqlUtils.findTableName(ctx)
+    val idField     = SqlUtils.findIdField(ctx)
+    val idFieldName = SqlUtils.findFieldName(idField)
+    val remaining   = ctx.parameters.filterNot(_ == idField)
+    val nonIdFieldStructure = remaining.map { param =>
+      val fieldName      = SqlUtils.findFieldName(param)
+      val fieldReference = param.typeclass.describe().idField
+      FieldName(fieldName) -> fieldReference
+    }.toList
 
-      val idFieldStructure = idField.typeclass.findId()._1
-      val ownIdFieldStructure = Right((idFieldStructure.left.get, SqlUtils.findTableName(ctx), SqlUtils.findFieldName(idField)))
-      (ownIdFieldStructure, nonIdFieldStructure)
+    val idFieldType = idField.typeclass.describe().idField match {
+      case SimpleValue(ft)           => ft
+      case ObjectReference(ft, _, _) => ft
     }
+
+    val idFieldStructure = ObjectReference(idFieldType, TableName(tableName), FieldName(idFieldName))
+    TableDescription(idFieldStructure, nonIdFieldStructure)
   }
 
-  def dispatch[T](ctx: SealedTrait[Typeclass, T]): IdFinder[T] = ???
+  def dispatch[T](ctx: SealedTrait[Typeclass, T]): TableDescriber[T] = ???
 
-  implicit def gen[T]: IdFinder[T] = macro Magnolia.gen[T]
+  implicit def gen[T]: TableDescriber[T] = macro Magnolia.gen[T]
 
-  implicit val intUpdater: IdFinder[Int] = new IdFinder[Int] {
-    override def findId(): (Either[FieldType, (FieldType, String, String)], Map[String, Either[FieldType, (FieldType, String, String)]]) =
-      (Left(Integer), Map())
-  }
+  implicit val intUpdater: TableDescriber[Int] = () => TableDescription(SimpleValue(Integer), Nil)
 
-  implicit val stringUpdater: IdFinder[String] = new IdFinder[String] {
-    override def findId(): (Either[FieldType, (FieldType, String, String)], Map[String, Either[FieldType, (FieldType, String, String)]]) =
-      (Left(UUID), Map())
-  }
+  implicit val stringUpdater: TableDescriber[String] = () => TableDescription(SimpleValue(UUID), Nil)
 
-  implicit val doubleUpdater: IdFinder[Double] = new IdFinder[Double] {
-    override def findId(): (Either[FieldType, (FieldType, String, String)], Map[String, Either[FieldType, (FieldType, String, String)]]) =
-      (Left(Double), Map())
-  }
+  implicit val doubleUpdater: TableDescriber[Double] = () => TableDescription(SimpleValue(Double), Nil)
 }
 
 trait EasyUpdater[A] {
@@ -568,6 +570,12 @@ object EasySaver {
   }
 
   implicit def gen[T]: EasySaver[T] = macro Magnolia.gen[T]
+}
+
+object Desc extends App {
+  val desc = TableDescriber.gen[Cabin]
+
+  println(desc.describe())
 }
 
 object Saver extends App {
