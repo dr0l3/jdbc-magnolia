@@ -23,17 +23,17 @@ object SqlUtils {
   def findTableName[Ty[_], T](ctx: CaseClass[Ty, T]): String =
     ctx.annotations.collectFirst {
       case SqlAnnotations.tableName(name) => name
-    }.getOrElse(ctx.typeName.short)
+    }.getOrElse(ctx.typeName.short.toLowerCase)
 
   def findTableName[Ty[_], T](ctx: SealedTrait[Ty, T]): String =
     ctx.annotations.collectFirst {
       case SqlAnnotations.tableName(name) => name
-    }.getOrElse(ctx.typeName.short)
+    }.getOrElse(ctx.typeName.short.toLowerCase)
 
   def findTableName[Ty[_], T](ctx: Subtype[Ty, T]): String = {
     ctx.annotations.collectFirst {
       case SqlAnnotations.tableName(name) => name
-    }.getOrElse(ctx.typeName.short)
+    }.getOrElse(ctx.typeName.short.toLowerCase)
   }
 
   def idTypeToString(ft: DataType) = ft match {
