@@ -116,4 +116,16 @@ object SqlUtils {
       case UUID         => UUID
     }
   }
+
+  def convertToNonAutoIncrementIfPossible(dataType: DataType): DataType = dataType match {
+    case Float => Float
+    case Text  => Text
+    case idType: IdType     => idType match {
+      case Serial    => Integer
+      case BigSerial => Integer
+      case Integer   => Integer
+      case Character(n)      => Character(n)
+      case UUID      => UUID
+    }
+  }
 }

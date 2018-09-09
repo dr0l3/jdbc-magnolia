@@ -1,4 +1,4 @@
-import SqlAnnotations.{ id, tableName }
+import SqlAnnotations.{ fieldName, id, tableName }
 import cats.effect.IO
 import doobie.{ Fragment, LogHandler, Transactor }
 import magnolia._
@@ -9,6 +9,7 @@ import cats.implicits._
 import com.danielasfregola.randomdatagenerator.magnolia.RandomDataGenerator._
 import doobie._
 import doobie.implicits._
+import doobie.util.transactor
 import org.scalacheck.Arbitrary
 import scalaprops.Gen
 import scalaprops.Shapeless._
@@ -62,8 +63,15 @@ object Inserter {
             (ctx.parameters, (Seq(), Seq()))
         }
 
-      val paramsToInsert = pars
+      val (paramsToInsert, seqParams) = pars
         .map(param => SqlUtils.entityDescForParam(param, tableDesc, ctx))
+        .partition {
+          case (_, entityDesc) =>
+            entityDesc match {
+              case TableDescSeqType(_, _, _) => false
+              case _                         => true
+            }
+        }
 
       val labels = idLable ++ paramsToInsert.map { case (param, _) => SqlUtils.findFieldName(param) }
       val values: IO[List[Either[String, String]]] = paramsToInsert.toList.traverse {
@@ -89,11 +97,13 @@ object Inserter {
           Fragment.const(valueDefinitions)
 
         _ = println(update.toString())
-
         response <- update
                      .updateWithLogHandler(LogHandler.jdkLogHandler)
                      .withUniqueGeneratedKeys[String](SqlUtils.findFieldName(idField))
                      .transact(xa)
+        _ <- seqParams.toList.traverse {
+              case (oaram, paramDesc) => oaram.typeclass.save(oaram.dereference(value), paramDesc, Some(response))
+            }
       } yield Right(response)
 
     }
@@ -161,73 +171,122 @@ object Inserter {
       IO(Right(value))
   }
 
+  implicit def seqSaver[A](implicit inserter: Inserter[A]): Inserter[List[A]] = new Typeclass[List[A]] {
+    override def save(value: List[A], tableDescription: EntityDesc, assignedId: Option[String])(
+      implicit xa: doobie.Transactor[IO]
+    ): IO[Either[String, String]] = {
+      // decide if this is a value or an object
+      val desc = tableDescription match {
+        case t: TableDescSeqType =>
+          t
+        case other =>
+          val errorMessage = s"Table Description for list was expected to be of type TableDescSeqType, but was $other"
+          throw new RuntimeException(errorMessage)
+      }
+      val id        = assignedId.get
+      val tableName = desc.tableName.name
+      val downstreamColName = desc.entityDesc match {
+        case TableDescRegular(_, idColumn, _, _, _) => idColumn.columnName.name
+        case TableDescSumType(_, idColumn, _)       => idColumn.columnName.name
+        case TableDescSeqType(_, idColumn, _)       => idColumn.columnName.name
+        case IdLeaf(_)                              => "value"
+        case RegularLeaf(_)                         => "value"
+      }
+      val upstreamColName = desc.idColumn.columnName.name
+      for {
+        upstreamResults <- value.traverse(v => inserter.save(v, desc.entityDesc, None))
+        omg             = upstreamResults.map(_.right.get)
+        progs = omg.map { res =>
+          val sql = s"""insert into $tableName ($upstreamColName, $downstreamColName) values ('$id', '$res')"""
+          println(sql)
+          Fragment.const(sql)
+        }
+        meh <- progs.traverse(prog => prog.updateWithLogHandler(LogHandler.jdkLogHandler).run.transact(xa))
+      } yield Right(meh.head.toString)
+
+    }
+  }
+
   implicit def gen[T]: Inserter[T] = macro Magnolia.gen[T]
 }
 
 object TestSave extends App {
   implicit val (url, xa) = PostgresStuff.go()
 
-  case class A(@id a: String, b: Int, c: Double)
-  case class B(a: A, @id d: String)
-  case class C(@id e: Int, b: B)
+//  case class A(@id a: String, b: Int, c: Double)
+//  case class B(a: A, @id d: String)
+//  case class C(@id e: Int, b: B)
+//
+//  val describer   = TableDescriber.gen[C]
+//  val description = describer.describe(false, false)
+//
+//  println(description)
+//
+//  val listTablesProg = Fragment
+//    .const(s"SELECT table_name FROM information_schema.tables ORDER BY table_name;")
+//    .query[String]
+//    .to[List]
+//
+//  val listItemsInCProg = Fragment
+//    .const("SELECT * FROM c")
+//    .query[(Int, String)]
+//    .to[List]
+//
+//  val creator   = TableCreator.gen[C]
+//  val saver     = Inserter.gen[C]
+//  val testValue = C(0, B(A("test-id-1", 2, 3.0), "test-id-2"))
+//  println(testValue)
+//  val prog = for {
+//    result       <- creator.createTable(description)
+//    beforeInsert <- listItemsInCProg.transact(xa)
+//    idRes        <- saver.save(testValue, description)
+//    afterInsert  <- listItemsInCProg.transact(xa)
+//  } yield (beforeInsert, idRes, afterInsert)
+//
+//  val (before, res, after) = prog.unsafeRunSync()
+//  println(before.size)
+//  println(after.size)
+//  println(after.diff(before))
 
-  val describer   = TableDescriber.gen[C]
-  val description = describer.describe(false, false)
-
-  println(description)
-
-  val listTablesProg = Fragment
-    .const(s"SELECT table_name FROM information_schema.tables ORDER BY table_name;")
-    .query[String]
-    .to[List]
-
-  val listItemsInCProg = Fragment
-    .const("SELECT * FROM c")
-    .query[(Int, String)]
-    .to[List]
-
-  val creator   = TableCreator.gen[C]
-  val saver     = Inserter.gen[C]
-  val testValue = C(0, B(A("test-id-1", 2, 3.0), "test-id-2"))
-  println(testValue)
-  val prog = for {
-    result       <- creator.createTable(description)
-    beforeInsert <- listItemsInCProg.transact(xa)
-    idRes        <- saver.save(testValue, description)
-    afterInsert  <- listItemsInCProg.transact(xa)
-  } yield (beforeInsert, idRes, afterInsert)
-
-  val (before, res, after) = prog.unsafeRunSync()
-  println(before.size)
-  println(after.size)
-  println(after.diff(before))
+  case class Book(@id @fieldName("book_id") bookId: Int, name: String, published: Int)
 
   @tableName("employees") sealed trait Employee
-  @tableName("janitors") case class Janitor(@id id: Int, name: String, age: Int)             extends Employee
-  @tableName("accountants") case class Accountant(@id id: Int, name: String, salary: Double) extends Employee
+  @tableName("janitors") case class Janitor(@id id: Int, name: String, age: Int) extends Employee
+  @tableName("accountants") case class Accountant(@id id: Int, name: String, salary: Double, books: List[Book])
+      extends Employee
 
-  val describer2 = TableDescriber.gen[Employee]
-  val description2 = describer2.describe(false, false)
+  val describer2   = TableDescriber.gen[Employee]
+  val description2 = describer2.describe(false, false, TableName(""), null)
 
-  val findEmployeesProg = Fragment.const(s"select * from employees")
+  val findEmployeesProg = Fragment
+    .const(s"select * from employees")
     .queryWithLogHandler[(Int)](LogHandler.jdkLogHandler)
+    .to[List]
+
+  val findBooksProg = Fragment
+    .const("select * from book")
+    .queryWithLogHandler[Book](LogHandler.jdkLogHandler)
     .to[List]
 
   val creator2 = TableCreator.gen[Employee]
   val inserter = Inserter.gen[Employee]
 
   val testValueOne = Janitor(1, "Dr. Jan Itor", 42)
-  val testValueTwo = Accountant(3, "Sally", 30.0)
+  val testValueTwo = Accountant(3, "Sally", 30.0, List(Book(1, "A Nice Book", 2), Book(3,"A better book", 2001)))
 
   val prog2 = for {
-    result <- creator2.createTable(description2)
+    result     <- creator2.createTable(description2)
     empsBefore <- findEmployeesProg.transact(xa)
-    _ <- inserter.save(testValueOne, description2)
-    _ <- inserter.save(testValueTwo, description2)
-    empsAfter <- findEmployeesProg.transact(xa)
-  } yield (result, empsBefore , empsAfter)
+    booksBefore <- findBooksProg.transact(xa)
+    _          <- inserter.save(testValueOne, description2)
+    _          <- inserter.save(testValueTwo, description2)
+    empsAfter  <- findEmployeesProg.transact(xa)
+  booksAfter <- findBooksProg.transact(xa)
+  } yield (result, empsBefore, empsAfter, booksBefore, booksAfter)
 
-  val (res2, before3, after3) = prog2.unsafeRunSync()
+  val (res2, before3, after3, bb, ba) = prog2.unsafeRunSync()
   println(after3)
   println(after3.diff(before3))
+  println(bb)
+  println(ba)
 }

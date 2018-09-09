@@ -33,6 +33,7 @@ case class ReferencesConstraint(columnName: ColumnName, foreignTableName: TableN
 sealed trait EntityDesc
 case class TableDescRegular(tableName: TableName, idColumn: IdColumn, additionalColumns: Seq[RegularColumn], referencesConstraint: Option[ReferencesConstraint], isSubtypeTable: Boolean) extends EntityDesc
 case class TableDescSumType(tableName: TableName, idColumn: IdColumn, subType: Seq[TableDescRegular]) extends EntityDesc
+case class TableDescSeqType(tableName: TableName, idColumn: IdColumn, entityDesc: EntityDesc) extends EntityDesc
 case class IdLeaf(idValueDesc: IdValueDesc) extends EntityDesc
 case class RegularLeaf(dataType: DataType) extends EntityDesc
 
