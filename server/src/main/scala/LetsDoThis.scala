@@ -33,13 +33,13 @@ object LetsDoThis extends App {
      *  showing each parameter, and prefixing it with the class name
      */
     def combine[T](ctx: CaseClass[Typeclass, T]): Show[Out, T] = { value =>
-      println(ctx)
+      println(s"COMBINE, $ctx")
       if (ctx.isValueClass) {
         val param = ctx.parameters.head
         param.typeclass.show(param.dereference(value))
       } else {
         val paramStrings = ctx.parameters.map { param =>
-          println(s"param: ${param.label}. Annotations: ${param.annotations}")
+//          println(s"param: ${param.label}. Annotations: ${param.annotations}")
           val label = param.annotations.collectFirst {
             case showStuff.name(n) => n
           }
@@ -68,12 +68,15 @@ object LetsDoThis extends App {
      * choose which typeclass to use based on the subtype of the sealed trait
      * and prefix with the annotations as discovered on the subtype.
      */
-    def dispatch[T](ctx: SealedTrait[Typeclass, T]): Show[Out, T] = (value: T) =>
+    def dispatch[T](ctx: SealedTrait[Typeclass, T]): Show[Out, T] = (value: T) => {
+      println(s"DISPATCH, $ctx")
       ctx.dispatch(value) { sub =>
         val anns = sub.annotations.filterNot(_.isInstanceOf[scala.SerialVersionUID])
         val annotationStr = if (anns.isEmpty) "" else anns.mkString("[", ",", "]")
         prefix(annotationStr, sub.typeclass.show(sub.cast(value)))
       }
+    }
+
 
     /** bind the Magnolia macro to this derivation object */
     implicit def gen[T]: Show[Out, T] = macro Magnolia.gen[T]
@@ -94,7 +97,13 @@ object LetsDoThis extends App {
 
     /** show typeclass for sequences */
     implicit def seq[A](implicit A: Show[String, A]): Show[String, Seq[A]] =
-      (as: Seq[A]) => as.iterator.map(A.show).mkString("[", ",", "]")
+      (as: Seq[A]) => as.map(A.show).mkString("[", ",", "]")
+
+    implicit def list[A](implicit A: Show[String, A]): Show[String, List[A]] =
+      (as: List[A]) => {
+        println("LIST")
+        as.map(A.show).mkString("[", ",", "]")
+      }
   }
 
   trait TypeNameInfo[T] { def name: TypeName }
@@ -170,9 +179,9 @@ object LetsDoThis extends App {
     @name("omg") i: Int,
     @secret() b: Boolean) extends Stuff
   case class B(s2: String, a: Stuff) extends Stuff
-  case class C(a: A, b: B) extends Stuff
+  case class C(a: A, b: B, meh: List[String]) extends Stuff
 
-  val c = C(A("hehe", 31, false), B("omg", A("meh", 32, true)))
+  val c = C(A("hehe", 31, false), B("omg", A("meh", 32, true)), List("hehe", "meh"))
 
   println(implicitly[Show[String, C]].show(c))
   println(implicitly[TypeNameInfo[C]].name)

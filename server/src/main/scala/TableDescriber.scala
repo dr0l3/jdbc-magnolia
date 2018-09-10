@@ -9,7 +9,6 @@ object TableDescriber {
   type Typeclass[T] = TableDescriber[T]
 
   def combine[T](ctx: CaseClass[Typeclass, T]): TableDescriber[T] = (isId, isSubtypeTable, parentTableName, parentIdCol) => {
-    println(ctx)
     val tableName   = SqlUtils.findTableName(ctx)
     val idField     = SqlUtils.findIdField(ctx)
     val idFieldName = SqlUtils.findFieldName(idField)
@@ -34,7 +33,6 @@ object TableDescriber {
   }
 
   def dispatch[T](ctx: SealedTrait[Typeclass, T]): TableDescriber[T] = (isId, isSubtypeTable, parentTableName, parentIdCol) => {
-    println(ctx)
     val baseTableName = TableName(SqlUtils.findTableName(ctx))
     val idFieldName   = ColumnName(s"${baseTableName.name}_id")
 
