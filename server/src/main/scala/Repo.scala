@@ -1,13 +1,13 @@
-import SqlAnnotations.{fieldName, id, tableName}
-import cats.effect.{Effect, IO}
-import doobie.{Fragment, LogHandler, Transactor}
-import magnolia.{CaseClass, Magnolia, SealedTrait}
+import SqlAnnotations.{ fieldName, id, tableName }
+import cats.effect.{ Effect, IO }
+import doobie.{ Fragment, LogHandler, Transactor }
+import magnolia.{ CaseClass, Magnolia, SealedTrait }
 import cats.Traverse
 import cats.effect.IO
-import doobie.{Fragment, LogHandler, Transactor}
-import magnolia.{CaseClass, Magnolia, SealedTrait}
+import doobie.{ Fragment, LogHandler, Transactor }
+import magnolia.{ CaseClass, Magnolia, SealedTrait }
 import cats.effect.IO
-import doobie.{Fragment, LogHandler, Transactor}
+import doobie.{ Fragment, LogHandler, Transactor }
 import magnolia._
 import cats._
 import cats.data._
@@ -89,10 +89,10 @@ object RepoOps {
         val (_, descForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
         val isSeqType = descForParam match {
           case TableDescSeqType(_, _, _) => true
-          case _ => false
+          case _                         => false
         }
 
-        if(isSeqType){
+        if (isSeqType) {
           param.typeclass.findById(id, descForParam)
         } else {
           val fieldName = SqlUtils.findFieldName(param)
@@ -104,15 +104,14 @@ object RepoOps {
             .transact(xa)
             .map(_.headOption)
 
-
-          val res =queryResult.flatMap { maybeString =>
+          val res = queryResult.flatMap { maybeString =>
             maybeString
               .map(
                 str =>
                   param.typeclass.findById(
                     str,
                     descForParam
-                  )
+                )
               )
               .getOrElse(IO(None))
           }
@@ -184,11 +183,11 @@ object RepoOps {
         idValues <- values
         updates = (idValue ++ idValues)
           .foldLeft[List[String]](Nil) { (acc, next) =>
-          next match {
-            case Right(v) => v :: acc
-            case Left(v)  => throw new RuntimeException(s"Error while inserting ${value}: $v")
+            next match {
+              case Right(v) => v :: acc
+              case Left(v)  => throw new RuntimeException(s"Error while inserting ${value}: $v")
+            }
           }
-        }
           .reverse
         columnDefinitions = labels.mkString("(", ", ", ")")
         valueDefinitions  = updates.map(str => s"'$str'").mkString("(", ", ", ")")
@@ -200,12 +199,12 @@ object RepoOps {
 
         _ = println(update.toString())
         response <- update
-          .updateWithLogHandler(LogHandler.jdkLogHandler)
-          .withUniqueGeneratedKeys[String](SqlUtils.findFieldName(idField))
-          .transact(xa)
+                     .updateWithLogHandler(LogHandler.jdkLogHandler)
+                     .withUniqueGeneratedKeys[String](SqlUtils.findFieldName(idField))
+                     .transact(xa)
         _ <- seqParams.toList.traverse {
-          case (oaram, paramDesc) => oaram.typeclass.save(oaram.dereference(value), paramDesc, Some(response))
-        }
+              case (oaram, paramDesc) => oaram.typeclass.save(oaram.dereference(value), paramDesc, Some(response))
+            }
       } yield Right(response)
 
     }
@@ -296,7 +295,9 @@ object RepoOps {
       } yield Right(res)
     }
 
-    override def describe(isId: Boolean, isSubtypeTable: Boolean,assignedTableName: TableName,
+    override def describe(isId: Boolean,
+                          isSubtypeTable: Boolean,
+                          assignedTableName: TableName,
                           parentIdColumn: IdColumn): EntityDesc = {
       val tableName   = SqlUtils.findTableName(ctx)
       val idField     = SqlUtils.findIdField(ctx)
@@ -307,7 +308,8 @@ object RepoOps {
         case IdLeaf(idValueDesc)   => idValueDesc
         case RegularLeaf(dataType) => IdValueDesc(SqlUtils.narrowToIdDataData(dataType))
         case other =>
-          val errorMessage = s"Id column of type ${ctx.typeName.short} was expected to be of type IdLeaf, but was $other"
+          val errorMessage =
+            s"Id column of type ${ctx.typeName.short} was expected to be of type IdLeaf, but was $other"
           throw new RuntimeException(errorMessage)
       }
       val idFieldStructure = IdColumn(ColumnName(idFieldName), idColDataType)
@@ -433,7 +435,9 @@ object RepoOps {
       } yield Right(baseTableRes)
     }
 
-    override def describe(isId: Boolean, isSubtypeTable: Boolean,assignedTableName: TableName,
+    override def describe(isId: Boolean,
+                          isSubtypeTable: Boolean,
+                          assignedTableName: TableName,
                           parentIdColumn: IdColumn): EntityDesc = {
       val baseTableName = TableName(SqlUtils.findTableName(ctx))
       val idFieldName   = ColumnName(s"${baseTableName.name}_id")
@@ -443,10 +447,10 @@ object RepoOps {
         val subTableDesc = subTable match {
           case TableDescRegular(tableName, idColumn, additionalColumns, _, _) =>
             TableDescRegular(tableName,
-              idColumn,
-              additionalColumns,
-              Some(ReferencesConstraint(idColumn.columnName, baseTableName, idFieldName)),
-              true)
+                             idColumn,
+                             additionalColumns,
+                             Some(ReferencesConstraint(idColumn.columnName, baseTableName, idFieldName)),
+                             true)
           case other =>
             val errorMessage =
               s"Subtype ${subType.typeName.short} of sealed trait ${ctx.typeName.short} was expected to generate TableDescRegular, but was $other"
@@ -455,7 +459,7 @@ object RepoOps {
         subTableDesc
       }
       val idColDataType = SqlUtils.narrowToAutoIncrementIfPossible(subTypeDesciptions.head.idColumn.idValueDesc.idType)
-      val idCol = IdColumn(idFieldName, IdValueDesc(idColDataType))
+      val idCol         = IdColumn(idFieldName, IdValueDesc(idColDataType))
 
       TableDescSumType(baseTableName, idCol, subTypeDesciptions)
     }
@@ -479,8 +483,10 @@ object RepoOps {
     ): IO[Either[String, Int]] =
       IO(Right(0))
 
-    override def describe(isId: Boolean, isSubtypeTable: Boolean,assignedTableName: TableName,
-    parentIdColumn: IdColumn): EntityDesc =
+    override def describe(isId: Boolean,
+                          isSubtypeTable: Boolean,
+                          assignedTableName: TableName,
+                          parentIdColumn: IdColumn): EntityDesc =
       if (isId) IdLeaf(IdValueDesc(Serial)) else RegularLeaf(Integer)
   }
 
@@ -500,7 +506,9 @@ object RepoOps {
     ): IO[Either[String, Int]] =
       IO(Right(0))
 
-    override def describe(isId: Boolean, isSubtypeTable: Boolean,assignedTableName: TableName,
+    override def describe(isId: Boolean,
+                          isSubtypeTable: Boolean,
+                          assignedTableName: TableName,
                           parentIdColumn: IdColumn): EntityDesc =
       if (isId) IdLeaf(IdValueDesc(Character(10))) else RegularLeaf(Text)
   }
@@ -521,7 +529,9 @@ object RepoOps {
     ): IO[Either[String, Int]] =
       IO(Right(0))
 
-    override def describe(isId: Boolean, isSubtypeTable: Boolean, assignedTableName: TableName,
+    override def describe(isId: Boolean,
+                          isSubtypeTable: Boolean,
+                          assignedTableName: TableName,
                           parentIdColumn: IdColumn): EntityDesc =
       if (isId) IdLeaf(IdValueDesc(Serial)) else RegularLeaf(Float)
   }
@@ -657,7 +667,7 @@ object Example extends App {
   case class Book(@id @fieldName("book_id") bookId: Int, title: String, published: Int)
   sealed trait Person
   case class Friend(@id id: Int, name: String, daysFriends: Int, books: List[Book]) extends Person
-  case class Stranger(@id id: Int, distance: Double, streetName: List[String])             extends Person
+  case class Stranger(@id id: Int, distance: Double, streetName: List[String])      extends Person
 
   implicit val idTransformer = new IdTransformer[Int] {
     override def fromString(str: String): Int =
