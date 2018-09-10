@@ -25,33 +25,34 @@ object GraphQL extends App {
   }
   implicit val (url, xa) = PostgresStuff.go()
 
-  sealed trait ContactInfo
-  case class Email(name: String, domain: String)                   extends ContactInfo
-  case class PhoneNumber(countryCode: Option[String], number: Int) extends ContactInfo
-  case class Address(street: String, number: Int)                  extends ContactInfo
-
-  sealed trait Pet
-  case class Cat(name: String)           extends Pet
-  case class Dog(name: String, age: Int) extends Pet
   @tableName("users") case class User(@id id: Int, name: String, age: Int)
 
-  val userRepo = RepoOps.toRepo[Int, User](RepoOps.gen[User])
+  implicit val userRepo = RepoOps.toRepo[Int, User](RepoOps.gen[User])
 
-  implicit lazy val userType: ObjectType[Repo[Int, User], User] = deriveObjectType[Repo[Int, User], User]()
+
+  class Mutation(repo: Repo[Int, User]) {
+    @GraphQLField
+    def addUser(name: String, age: Int): User = {
+      val user = User(1, name, age)
+      val id = repo.insert(user).unsafeRunSync()
+      user.copy(id = id)
+    }
+  }
+
+  case class RepoContext(mutation: Mutation, repo: Repo[Int, User])
+  implicit val userType = deriveObjectType[RepoContext, User]()
+  val mutationType = deriveContextObjectType[RepoContext, Mutation, Unit](_.mutation)
 
   val idArg = Argument("id", IntType)
 
-  val queryType: ObjectType[Repo[Int, User], Unit] = ObjectType(
+  val queryType = ObjectType(
     "query",
-    fields[Repo[Int, User], Unit](
-      Field("user",
-            OptionType(userType),
-            arguments = idArg :: Nil,
-            resolve = c => c.ctx.findById(c arg idArg).unsafeRunSync())
+    fields[RepoContext, Unit](
+      Field("user", OptionType(userType), arguments = idArg :: Nil, resolve = c => c.ctx.repo.findById(c arg idArg).unsafeRunSync())
     )
   )
 
-  val schema = Schema(queryType)
+  val schema = Schema(queryType, Some(mutationType))
 
   val query =
     gql"""
@@ -63,23 +64,40 @@ object GraphQL extends App {
           }
       """
 
+  val mutQuery =
+    gql"""
+         mutation {
+          addUser( name: "Rune",age : 31) {
+            id
+          }
+         }
+       """
+
   val exampleUser = User(1, "Rune", 32)
+
+  val repoContext = RepoContext(new Mutation(userRepo), userRepo)
 
   val prog = for {
     _     <- userRepo.createTables()
     id    <- userRepo.insert(exampleUser)
     found <- userRepo.findById(id)
     gql <- IO.fromFuture {
-            IO(Executor.execute(schema, query, userRepo))
+            IO(Executor.execute(schema, query, repoContext))
           }
-  } yield (found, gql)
+    gql2 <- IO.fromFuture {
+      IO(Executor.execute(schema, mutQuery, repoContext))
+    }
+    after <- userRepo.findById(2)
+  } yield (found, gql, gql2, after)
 
   val start         = System.nanoTime() nanos;
-  val (friend, gql) = prog.unsafeRunSync()
+  val (friend, gql, gql2, after) = prog.unsafeRunSync()
   val end           = System.nanoTime() nanos;
 
   println((end - start).toMillis)
 
   println(friend)
   println(gql)
+  println(gql2)
+  println(after)
 }
