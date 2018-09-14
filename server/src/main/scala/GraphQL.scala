@@ -33,21 +33,24 @@ object GraphQL extends App {
     @GraphQLField
     def addUser(name: String, age: Int): User = {
       val user = User(1, name, age)
-      val id = repo.insert(user).unsafeRunSync()
+      val id   = repo.insert(user).unsafeRunSync()
       user.copy(id = id)
     }
   }
 
   case class RepoContext(mutation: Mutation, repo: Repo[Int, User])
   implicit val userType = deriveObjectType[RepoContext, User]()
-  val mutationType = deriveContextObjectType[RepoContext, Mutation, Unit](_.mutation)
+  val mutationType      = deriveContextObjectType[RepoContext, Mutation, Unit](_.mutation)
 
   val idArg = Argument("id", IntType)
 
-  val queryType = ObjectType(
-    "query",
-    fields[RepoContext, Unit](
-      Field("user", OptionType(userType), arguments = idArg :: Nil, resolve = c => c.ctx.repo.findById(c arg idArg).unsafeRunSync())))
+  val queryType = ObjectType("query",
+                             fields[RepoContext, Unit](
+                               Field("user",
+                                     OptionType(userType),
+                                     arguments = idArg :: Nil,
+                                     resolve = c => c.ctx.repo.findById(c arg idArg).unsafeRunSync())
+                             ))
 
   val schema = Schema(queryType, Some(mutationType))
 
@@ -75,21 +78,21 @@ object GraphQL extends App {
   val repoContext = RepoContext(new Mutation(userRepo), userRepo)
 
   val prog = for {
-    _ <- userRepo.createTables()
-    id <- userRepo.insert(exampleUser)
+    _     <- userRepo.createTables()
+    id    <- userRepo.insert(exampleUser)
     found <- userRepo.findById(id)
     gql <- IO.fromFuture {
-      IO(Executor.execute(schema, query, repoContext))
-    }
+            IO(Executor.execute(schema, query, repoContext))
+          }
     gql2 <- IO.fromFuture {
-      IO(Executor.execute(schema, mutQuery, repoContext))
-    }
+             IO(Executor.execute(schema, mutQuery, repoContext))
+           }
     after <- userRepo.findById(2)
   } yield (found, gql, gql2, after)
 
-  val start = System.nanoTime() nanos;
+  val start                      = System.nanoTime() nanos;
   val (friend, gql, gql2, after) = prog.unsafeRunSync()
-  val end = System.nanoTime() nanos;
+  val end                        = System.nanoTime() nanos;
 
   println((end - start).toMillis)
 

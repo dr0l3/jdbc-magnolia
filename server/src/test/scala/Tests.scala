@@ -29,12 +29,12 @@ object Tests extends Properties("RepoProps") {
 
   property("Can insert and find simple case classes") = forAll { a: SimpleCaseClassExample =>
     val prog = for {
-      _ <- caseClassRepo.createTables()
+      _        <- caseClassRepo.createTables()
       inserted <- caseClassRepo.insert(a)
-      found <- caseClassRepo.findById(inserted)
+      found    <- caseClassRepo.findById(inserted)
     } yield {
       found.isDefined &&
-        found.get.copy(id = a.id) == a
+      found.get.copy(id = a.id) == a
     }
 
     prog.unsafeRunSync()
@@ -42,7 +42,7 @@ object Tests extends Properties("RepoProps") {
 
   sealed trait Trait
   case class FirstImplementation(@id id: String, string: String, double: Double) extends Trait
-  case class SecondImplementation(@id id: String, int: Int, double: Double) extends Trait
+  case class SecondImplementation(@id id: String, int: Int, double: Double)      extends Trait
 
   implicit val idTransformerString = new IdTransformer[String] {
     override def fromString(str: String): String = str
@@ -54,14 +54,14 @@ object Tests extends Properties("RepoProps") {
 
   property("Can insert and find traits") = forAll { a: Trait =>
     val prog = for {
-      _ <- traitRepo.createTables()
-      id <- traitRepo.insert(a)
+      _     <- traitRepo.createTables()
+      id    <- traitRepo.insert(a)
       found <- traitRepo.findById(id)
     } yield {
       val equality = (found.get, a) match {
-        case (a: FirstImplementation, b: FirstImplementation) => a.copy(id = b.id) == b
+        case (a: FirstImplementation, b: FirstImplementation)   => a.copy(id = b.id) == b
         case (a: SecondImplementation, b: SecondImplementation) => a.copy(id = b.id) == b
-        case _ => false
+        case _                                                  => false
       }
 
       found.isDefined && equality
@@ -71,19 +71,19 @@ object Tests extends Properties("RepoProps") {
   }
 
   sealed trait ComplexExample
-  case class A(@id id: Int, name: String) extends ComplexExample
+  case class A(@id id: Int, name: String)     extends ComplexExample
   case class Base(@id id: Int, namez: String) extends ComplexExample
   sealed trait C
-  case class D(@id string: String, double: Double) extends C
+  case class D(@id string: String, double: Double)           extends C
   case class E(@id string: String, age: Int, height: Double) extends C
 
   implicit val arbComplex = implicitly[Arbitrary[ComplexExample]]
-  val complexRepo = RepoOps.toRepo(RepoOps.gen[ComplexExample])(transactor = xa, idTransformer = idTransformer)
+  val complexRepo         = RepoOps.toRepo(RepoOps.gen[ComplexExample])(transactor = xa, idTransformer = idTransformer)
 
   property("Can insert and find complex example") = forAll { complex: ComplexExample =>
     val prog = for {
-      _ <- complexRepo.createTables()
-      id <- complexRepo.insert(complex)
+      _     <- complexRepo.createTables()
+      id    <- complexRepo.insert(complex)
       found <- complexRepo.findById(id)
     } yield found.isDefined
 
@@ -93,17 +93,17 @@ object Tests extends Properties("RepoProps") {
   case class Lists(@id id: Int, string: String, list: List[String], list2: List[SomeCaseClass])
   case class SomeCaseClass(@id string: Int, anotherString: String)
   implicit val listsArb = implicitly[Arbitrary[Lists]]
-  val listsRepo = RepoOps.toRepo(RepoOps.gen[Lists])(transactor = xa, idTransformer = idTransformer)
+  val listsRepo         = RepoOps.toRepo(RepoOps.gen[Lists])(transactor = xa, idTransformer = idTransformer)
 
   property("can insert find lists") = forAll { l: Lists =>
     val prog = for {
-      _ <- listsRepo.createTables()
-      id <- listsRepo.insert(l)
+      _     <- listsRepo.createTables()
+      id    <- listsRepo.insert(l)
       found <- listsRepo.findById(id)
     } yield {
       found.isDefined &&
-        found.get.list.size == l.list.size &&
-        found.get.list2.size == l.list2.size
+      found.get.list.size == l.list.size &&
+      found.get.list2.size == l.list2.size
     }
 
     prog.unsafeRunSync()
