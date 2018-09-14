@@ -1,13 +1,15 @@
-import SqlAnnotations.{ fieldName, id, tableName }
-import cats.effect.{ Effect, IO }
-import doobie.{ Fragment, LogHandler, Transactor }
-import magnolia.{ CaseClass, Magnolia, SealedTrait }
+import java.lang
+
+import SqlAnnotations.{fieldName, id, tableName}
+import cats.effect.{Effect, IO}
+import doobie.{Fragment, LogHandler, Transactor}
+import magnolia.{CaseClass, Magnolia, SealedTrait}
 import cats.Traverse
 import cats.effect.IO
-import doobie.{ Fragment, LogHandler, Transactor }
-import magnolia.{ CaseClass, Magnolia, SealedTrait }
+import doobie.{Fragment, LogHandler, Transactor}
+import magnolia.{CaseClass, Magnolia, SealedTrait}
 import cats.effect.IO
-import doobie.{ Fragment, LogHandler, Transactor }
+import doobie.{Fragment, LogHandler, Transactor}
 import magnolia._
 import cats._
 import cats.data._
@@ -525,6 +527,32 @@ object RepoOps {
                           parentIdColumn: IdColumn): EntityDesc =
       if (isId) IdLeaf(IdValueDesc(Serial)) else RegularLeaf(Float)
   }
+
+  implicit val boolRepo: RepoOps[Boolean] = new Typeclass[Boolean] {
+    override def findById(id: String, tableDescription: EntityDesc)(
+      implicit xa: transactor.Transactor[IO]
+    ): IO[Option[Boolean]] = {
+      IO(Some(id.contentEquals("t")))
+    }
+    override def save(value: Boolean,
+                      tableDescription: EntityDesc,
+                      assignedId: Option[String])(
+      implicit xa: Transactor[IO]
+    ): IO[Either[String, String]] = {
+      IO(Right(value.toString))
+    }
+    override def createTable(tableDescription: EntityDesc)(
+      implicit xa: Transactor[IO]
+    ): IO[Either[String, Int]] = {
+      IO(Right(0))
+    }
+    override def describe(isId: Boolean,
+                          isSubtypeTable: Boolean,
+                          assignedTableName: TableName,
+                          parentIdColumn: IdColumn): EntityDesc = {
+      if(isId) throw new RuntimeException("Why are you using a boolean as an Id you idiot?") else RegularLeaf(Bool)
+    }
+}
 
   implicit def listOps[A](implicit ops: RepoOps[A]) = new Typeclass[List[A]] {
     override def createTable(tableDescription: EntityDesc)(implicit

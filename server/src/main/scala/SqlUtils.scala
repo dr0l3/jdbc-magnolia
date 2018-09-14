@@ -62,6 +62,7 @@ object SqlUtils {
   def idTypeToString(ft: DataType) = ft match {
     case Float => "FLOAT"
     case Text  => "TEXT"
+    case Bool => "BOOLEAN"
     case idType: IdType =>
       idType match {
         case Serial       => "SERIAL"

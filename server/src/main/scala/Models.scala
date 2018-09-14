@@ -1,6 +1,7 @@
 sealed trait DataType
 case object Float extends DataType
 case object Text  extends DataType
+case object Bool  extends DataType
 
 sealed trait IdType          extends DataType
 case object Serial           extends IdType

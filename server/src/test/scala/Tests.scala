@@ -1,4 +1,6 @@
-import SqlAnnotations.id
+import Shared.{idTransformerString, xa}
+import SqlAnnotations.{fieldName, id, tableName}
+import Tests.property
 import org.scalacheck.Properties
 import cats._
 import cats.data._
@@ -12,10 +14,7 @@ import org.scalacheck.Prop.forAll
 import scalacheckmagnolia.MagnoliaArbitrary._
 import org.scalacheck._
 
-object Tests extends Properties("RepoProps") {
-
-  case class SimpleCaseClassExample(@id id: Int, string: String, double: Double, anotherInt: Int)
-
+object Shared {
   implicit val (url, xa) = PostgresStuff.go();
   implicit val arbString = Arbitrary[String](Gen.alphaStr)
 
@@ -23,7 +22,17 @@ object Tests extends Properties("RepoProps") {
     override def fromString(str: String): Int = str.toInt
   }
 
-  val caseClassRepo = RepoOps.toRepo(RepoOps.gen[SimpleCaseClassExample])
+  implicit val idTransformerString = new IdTransformer[String] {
+    override def fromString(str: String): String = str
+  }
+}
+
+object Tests extends Properties("RepoProps") {
+  import Shared._
+
+  case class SimpleCaseClassExample(@id id: Int, string: String, double: Double, anotherInt: Int, bool: Boolean)
+
+  val caseClassRepo = RepoOps.toRepo(RepoOps.gen[SimpleCaseClassExample])(transactor = xa, idTransformer = idTransformer)
 
   implicit val arb = implicitly[Arbitrary[SimpleCaseClassExample]]
 
@@ -40,13 +49,14 @@ object Tests extends Properties("RepoProps") {
     prog.unsafeRunSync()
   }
 
+
+}
+
+object TraitTest extends Properties("Repo.trait") {
+  import Shared._
   sealed trait Trait
   case class FirstImplementation(@id id: String, string: String, double: Double) extends Trait
   case class SecondImplementation(@id id: String, int: Int, double: Double)      extends Trait
-
-  implicit val idTransformerString = new IdTransformer[String] {
-    override def fromString(str: String): String = str
-  }
 
   val traitRepo = RepoOps.toRepo(RepoOps.gen[Trait])(transactor = xa, idTransformer = idTransformerString)
 
@@ -69,7 +79,10 @@ object Tests extends Properties("RepoProps") {
 
     prog.unsafeRunSync()
   }
+}
 
+object ComplexTests extends Properties("Repo.complex") {
+  import Shared._
   sealed trait ComplexExample
   case class A(@id id: Int, name: String)     extends ComplexExample
   case class Base(@id id: Int, namez: String) extends ComplexExample
@@ -89,7 +102,10 @@ object Tests extends Properties("RepoProps") {
 
     prog.unsafeRunSync()
   }
+}
 
+object ListTest extends Properties("Repo.list") {
+  import Shared._
   case class Lists(@id id: Int, string: String, list: List[String], list2: List[SomeCaseClass])
   case class SomeCaseClass(@id string: Int, anotherString: String)
   implicit val listsArb = implicitly[Arbitrary[Lists]]
@@ -102,9 +118,33 @@ object Tests extends Properties("RepoProps") {
       found <- listsRepo.findById(id)
     } yield {
       found.isDefined &&
-      found.get.list.size == l.list.size &&
-      found.get.list2.size == l.list2.size
+        found.get.list.size == l.list.size &&
+        found.get.list2.size == l.list2.size
     }
+
+    prog.unsafeRunSync()
+  }
+}
+
+object AnnotationTests extends Properties("Repo.annotation") {
+  implicit val (url, xa) = PostgresStuff.go();
+  implicit val arbString = Arbitrary[String](Gen.alphaStr)
+
+  implicit val idTransformer = new IdTransformer[Int] {
+    override def fromString(str: String): Int = str.toInt
+  }
+
+  @tableName("random_table") case class WithAnnotations(@id @fieldName("random_name") id: Int, @fieldName("another") str: String)
+  implicit val annotArb = implicitly[Arbitrary[WithAnnotations]]
+
+  val annoRepo = RepoOps.toRepo(RepoOps.gen[WithAnnotations])(transactor = xa, idTransformer = idTransformer)
+
+  property("Can insert and find things with annotations") = forAll { a: WithAnnotations =>
+    val prog = for {
+      _ <- annoRepo.createTables()
+      id <- annoRepo.insert(a)
+      found <- annoRepo.findById(id)
+    } yield found.isDefined
 
     prog.unsafeRunSync()
   }
