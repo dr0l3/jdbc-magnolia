@@ -177,6 +177,12 @@ object PostgresStuff {
     implicit val xa: Transactor.Aux[IO, Unit] = Transactor.fromDriverManager[IO]("org.postgresql.Driver", url)
     (url, xa)
   }
+
+  def goLive(): (String, Transactor.Aux[IO, Unit]) = {
+    val url = s"""jdbc:postgresql://0.0.0.0:5432/postgres?user=postgres&password=password"""
+    implicit val xa: Transactor.Aux[IO, Unit] = Transactor.fromDriverManager[IO]("org.postgresql.Driver", url)
+    (url, xa)
+  }
 }
 
 sealed class SqlAnnotations extends Annotation
