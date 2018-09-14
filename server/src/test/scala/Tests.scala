@@ -15,7 +15,7 @@ import scalacheckmagnolia.MagnoliaArbitrary._
 import org.scalacheck._
 
 object Shared {
-  implicit val (url, xa) = PostgresStuff.go();
+  implicit val (url, xa) = PostgresStuff.goLive();
   implicit val arbString = Arbitrary[String](Gen.alphaStr)
 
   implicit val idTransformer = new IdTransformer[Int] {
@@ -116,6 +116,13 @@ object ListTest extends Properties("Repo.list") {
       _     <- listsRepo.createTables()
       id    <- listsRepo.insert(l)
       found <- listsRepo.findById(id)
+      res <- Fragment.const(
+        s"""
+           |SELECT schemaname,relname,n_live_tup
+           |  FROM pg_stat_user_tables
+           |  ORDER BY n_live_tup DESC;
+       """.stripMargin).query[(String, String, Int)].to[List].transact(xa)
+      _ = println(res)
     } yield {
       found.isDefined &&
         found.get.list.size == l.list.size &&
