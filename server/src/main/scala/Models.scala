@@ -1,5 +1,5 @@
 sealed trait DataType
-case object Float  extends DataType
+case object Float extends DataType
 case object Text extends DataType
 
 sealed trait IdType extends DataType
@@ -9,20 +9,16 @@ case object Integer extends IdType
 case class Character(n: Int) extends IdType // Must specify size of ids
 case object UUID extends IdType
 
-
 case class TableName(name: String) extends AnyVal
 case class ColumnName(name: String) extends AnyVal
 
 trait FieldReference
-case class SimpleValue(fieldType: DataType)                                                 extends FieldReference
+case class SimpleValue(fieldType: DataType) extends FieldReference
 case class ObjectReference(fieldType: DataType, tableName: TableName, fieldName: ColumnName) extends FieldReference
 case class SumTypeObjectReference(baseTable: ObjectReference, subTypeTables: List[TableDescription])
-    extends FieldReference
+  extends FieldReference
 
-case class TableDescription(idField: FieldReference, additionalFields: List[(ColumnName, TableDescription)], referencesConstraint:Option[(TableName, ColumnName)] = None)
-
-
-
+case class TableDescription(idField: FieldReference, additionalFields: List[(ColumnName, TableDescription)], referencesConstraint: Option[(TableName, ColumnName)] = None)
 
 case class IdValueDesc(idType: IdType) //isProvided true if subtypetable
 case class IdColumn(columnName: ColumnName, idValueDesc: IdValueDesc)

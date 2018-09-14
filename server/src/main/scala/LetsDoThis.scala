@@ -39,7 +39,7 @@ object LetsDoThis extends App {
         param.typeclass.show(param.dereference(value))
       } else {
         val paramStrings = ctx.parameters.map { param =>
-//          println(s"param: ${param.label}. Annotations: ${param.annotations}")
+          //          println(s"param: ${param.label}. Annotations: ${param.annotations}")
           val label = param.annotations.collectFirst {
             case showStuff.name(n) => n
           }
@@ -76,7 +76,6 @@ object LetsDoThis extends App {
         prefix(annotationStr, sub.typeclass.show(sub.cast(value)))
       }
     }
-
 
     /** bind the Magnolia macro to this derivation object */
     implicit def gen[T]: Show[Out, T] = macro Magnolia.gen[T]

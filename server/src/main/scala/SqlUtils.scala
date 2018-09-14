@@ -3,7 +3,7 @@ object SqlUtils {
   def idTypeString[A](a: A): Option[String] =
     a match {
       case Int => Some("SERIAL")
-      case _   => None
+      case _ => None
     }
 
   def findFieldName[Ty[_], T](param: Param[Ty, T]): String =
@@ -18,8 +18,7 @@ object SqlUtils {
       }
       idParam.isDefined
     }.getOrElse(
-      throw new RuntimeException(s"No id field defined for type ${ctx.typeName}. Define one using the @id Annotation")
-    )
+      throw new RuntimeException(s"No id field defined for type ${ctx.typeName}. Define one using the @id Annotation"))
 
   def findTableName[Ty[_], T](ctx: CaseClass[Ty, T]): String =
     ctx.annotations.collectFirst {
@@ -38,44 +37,45 @@ object SqlUtils {
 
   def idTypeToString(ft: DataType) = ft match {
     case Float => "FLOAT"
-    case Text  => "TEXT"
+    case Text => "TEXT"
     case idType: IdType =>
       idType match {
-        case Serial       => "SERIAL"
-        case BigSerial    => "BIGSERIAL"
-        case Integer      => "INTEGER"
+        case Serial => "SERIAL"
+        case BigSerial => "BIGSERIAL"
+        case Integer => "INTEGER"
         case Character(n) => s"VARCHAR($n)"
-        case UUID         => "UUID"
+        case UUID => "UUID"
       }
   }
 
   def fieldReferenceToFieldType(fieldReference: FieldReference): DataType = fieldReference match {
-    case SimpleValue(ft)                      => ft
-    case ObjectReference(ft, _, _)            => ft
+    case SimpleValue(ft) => ft
+    case ObjectReference(ft, _, _) => ft
     case SumTypeObjectReference(baseTable, _) => baseTable.fieldType
   }
 
   def isAutofillFieldType(fieldType: DataType) = fieldType match {
-    case Integer   => false
-    case Serial    => true
+    case Integer => false
+    case Serial => true
     case BigSerial => true
-    case _         => false
+    case _ => false
   }
 
   def fieldRefeenceToTableName(idField: FieldReference): String =
     idField match {
       case ObjectReference(_, tableName, _) => tableName.name
-      case SumTypeObjectReference(bt, _)    => bt.tableName.name
+      case SumTypeObjectReference(bt, _) => bt.tableName.name
       case other =>
         lazy val error =
           s"Expected field $idField to be of type ObjectReference or SumTypeObjectReference, but was $other"
         throw new RuntimeException(error)
     }
 
-  def tableDescriptionForParam[Ty[_], T](param: Param[Ty, T],
-                                         fields: List[(ColumnName, TableDescription)],
-                                         ctx: CaseClass[Ty, T]): (Param[Ty, T], TableDescription) = {
-    val fieldName         = SqlUtils.findFieldName(param)
+  def tableDescriptionForParam[Ty[_], T](
+    param: Param[Ty, T],
+    fields: List[(ColumnName, TableDescription)],
+    ctx: CaseClass[Ty, T]): (Param[Ty, T], TableDescription) = {
+    val fieldName = SqlUtils.findFieldName(param)
     lazy val errorMessage = s"Unable to find description for ${param.label} on class ${ctx.typeName.short}"
     val tableDescriptionForParam = fields
       .find(_._1.name == fieldName)
@@ -83,25 +83,26 @@ object SqlUtils {
     (param, tableDescriptionForParam._2)
   }
 
-  def entityDescForParam[Ty[_], T](param: Param[Ty, T],
-                                   tableDescRegular: TableDescRegular,
-                                   ctx: CaseClass[Ty, T]): (Param[Ty, T], EntityDesc) = {
-    val fieldName         = SqlUtils.findFieldName(param)
+  def entityDescForParam[Ty[_], T](
+    param: Param[Ty, T],
+    tableDescRegular: TableDescRegular,
+    ctx: CaseClass[Ty, T]): (Param[Ty, T], EntityDesc) = {
+    val fieldName = SqlUtils.findFieldName(param)
     lazy val errorMessage = s"Unable to find description for ${param.label} on class ${ctx.typeName.short}"
     val entitDescForParam = tableDescRegular.additionalColumns
       .find(_.columnName.name == fieldName)
       .map(_.regularValue)
       .orElse(
         if (tableDescRegular.idColumn.columnName.name == fieldName) Some(IdLeaf(tableDescRegular.idColumn.idValueDesc))
-        else None
-      )
+        else None)
       .getOrElse(throw new RuntimeException(errorMessage))
     (param, entitDescForParam)
   }
 
-  def entityDescForSubtype[Ty[_], T](subtype: Subtype[Ty, T],
-                                     tableDesc: TableDescSumType,
-                                     ctx: SealedTrait[Ty, T]): EntityDesc = {
+  def entityDescForSubtype[Ty[_], T](
+    subtype: Subtype[Ty, T],
+    tableDesc: TableDescSumType,
+    ctx: SealedTrait[Ty, T]): EntityDesc = {
     val tableName = SqlUtils.findTableName(subtype)
     lazy val errorMessage =
       s"Unable to find subtype table for type ${subtype.typeName.short} in sealed trait ${ctx.typeName.short}"
@@ -111,34 +112,34 @@ object SqlUtils {
   }
 
   def narrowToIdDataData(dataType: DataType): IdType = dataType match {
-    case Float         => Integer
-    case Text          => Character(10)
+    case Float => Integer
+    case Text => Character(40)
     case other: IdType => other
   }
 
   def narrowToAutoIncrementIfPossible(dataType: DataType): IdType = dataType match {
     case Float => Integer
-    case Text  => Character(10)
+    case Text => Character(10)
     case idType: IdType =>
       idType match {
-        case Serial       => Serial
-        case BigSerial    => BigSerial
-        case Integer      => Serial
+        case Serial => Serial
+        case BigSerial => BigSerial
+        case Integer => Serial
         case Character(n) => Character(n)
-        case UUID         => UUID
+        case UUID => UUID
       }
   }
 
   def convertToNonAutoIncrementIfPossible(dataType: DataType): DataType = dataType match {
     case Float => Float
-    case Text  => Text
+    case Text => Text
     case idType: IdType =>
       idType match {
-        case Serial       => Integer
-        case BigSerial    => Integer
-        case Integer      => Integer
+        case Serial => Integer
+        case BigSerial => Integer
+        case Integer => Integer
         case Character(n) => Character(n)
-        case UUID         => UUID
+        case UUID => UUID
       }
   }
 }

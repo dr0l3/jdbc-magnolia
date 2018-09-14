@@ -19,23 +19,25 @@ import scala.annotation.Annotation
 import scala.language.experimental.macros
 
 @tableName("cabins")
-case class Cabin(@id id: Int,
-                 @fieldName("owner_id") owner: Person,
-                 @fieldName("square_meters") squareMeters: Int,
-                 temperature: Double)
-case class Person(@id @fieldName("person_id") personId: Int,
-                  @fieldName("person_name") name: String,
-                  age: Int,
-                  @fieldName("pet_id") pet: Pet)
+case class Cabin(
+  @id id: Int,
+  @fieldName("owner_id") owner: Person,
+  @fieldName("square_meters") squareMeters: Int,
+  temperature: Double)
+case class Person(
+  @id @fieldName("person_id") personId: Int,
+  @fieldName("person_name") name: String,
+  age: Int,
+  @fieldName("pet_id") pet: Pet)
 @tableName("pets")
-case class Pet(@fieldName("pet_id") @id petId: Int, @fieldName("pet_name") name: String)
+case class Pet(@fieldName("pet_id")@id petId: Int, @fieldName("pet_name") name: String)
 
 object PostgresStuff {
   def go(): (String, Transactor.Aux[IO, Unit]) = {
     val postgres = new EmbeddedPostgres()
 
     val path = Paths.get("/home/drole/.embedpostgresql")
-    val url  = postgres.start(EmbeddedPostgres.cachedRuntimeConfig(path))
+    val url = postgres.start(EmbeddedPostgres.cachedRuntimeConfig(path))
 
     implicit val xa: Transactor.Aux[IO, Unit] = Transactor.fromDriverManager[IO]("org.postgresql.Driver", url)
     (url, xa)
@@ -81,17 +83,17 @@ object PostgresStuff {
       .transact(xa)
 
   def insert(person: Person)(implicit xa: Transactor[IO]): IO[Int] = {
-    val age     = person.age
-    val name    = person.name
+    val age = person.age
+    val name = person.name
     val petName = person.pet.name
 
     val prog = for {
       petId <- sql"""insert into pets (pet_name) values ($petName)"""
-                .updateWithLogHandler(LogHandler.jdkLogHandler)
-                .withUniqueGeneratedKeys[Int]("pet_id")
+        .updateWithLogHandler(LogHandler.jdkLogHandler)
+        .withUniqueGeneratedKeys[Int]("pet_id")
       pId <- sql"""insert into person (age, pet_id, person_name) values ( $age , $petId , $name )"""
-              .updateWithLogHandler(LogHandler.jdkLogHandler)
-              .withUniqueGeneratedKeys[Int]("person_id")
+        .updateWithLogHandler(LogHandler.jdkLogHandler)
+        .withUniqueGeneratedKeys[Int]("person_id")
     } yield pId
 
     prog.transact(xa)
@@ -100,27 +102,27 @@ object PostgresStuff {
   def find2(id: Int)(implicit xa: Transactor[IO]): IO[List[Person]] =
     for {
       response <- sql"""select person.person_id, person.person_name, person.age, pets.pet_id, pets.pet_name from person full outer join pets on person.pet_id = pets.pet_id where person.person_id = $id"""
-                   .queryWithLogHandler[Person](LogHandler.jdkLogHandler)
-                   .to[List]
-                   .transact(xa)
+        .queryWithLogHandler[Person](LogHandler.jdkLogHandler)
+        .to[List]
+        .transact(xa)
     } yield response
 
   def find(id: Int)(implicit xa: Transactor[IO]) =
     for {
       petIds <- sql"""select pet_id from person where person_id = $id """
-                 .queryWithLogHandler[Int](LogHandler.jdkLogHandler)
-                 .to[List]
-                 .transact(xa)
+        .queryWithLogHandler[Int](LogHandler.jdkLogHandler)
+        .to[List]
+        .transact(xa)
       petId = petIds.head
       petNames <- sql"""select pet_name from pets where pet_id = $petId """
-                   .queryWithLogHandler[String](LogHandler.jdkLogHandler)
-                   .to[List]
-                   .transact(xa)
+        .queryWithLogHandler[String](LogHandler.jdkLogHandler)
+        .to[List]
+        .transact(xa)
       petName = petNames.head
       personVitals <- sql"""select person_name, age from person where person_id = $id """
-                       .queryWithLogHandler[(String, Int)](LogHandler.jdkLogHandler)
-                       .to[List]
-                       .transact(xa)
+        .queryWithLogHandler[(String, Int)](LogHandler.jdkLogHandler)
+        .to[List]
+        .transact(xa)
     } yield {
       val personVital = personVitals.head
       Person(id, personVital._1, personVital._2, Pet(petId, petName))
@@ -134,27 +136,25 @@ object PostgresStuff {
 }
 
 sealed trait ObjectReplication
-case object Inline     extends ObjectReplication
-case class OneToOne()  extends ObjectReplication
+case object Inline extends ObjectReplication
+case class OneToOne() extends ObjectReplication
 case class OneToMany() extends ObjectReplication
 
 sealed trait SequenceReplication
 case object InlineArray extends SequenceReplication
-case class ManyToTo()   extends SequenceReplication
+case class ManyToTo() extends SequenceReplication
 case class ManyToMany() extends SequenceReplication
 
 sealed class SqlAnnotations extends Annotation
 object SqlAnnotations {
-  final case class tableName(name: String)                          extends SqlAnnotations
-  final case class fieldName(name: String)                          extends SqlAnnotations
-  final case class id()                                             extends SqlAnnotations
-  final case class hidden()                                         extends SqlAnnotations
-  final case class ignored()                                        extends SqlAnnotations
-  final case class replicationObj(replication: ObjectReplication)   extends SqlAnnotations
+  final case class tableName(name: String) extends SqlAnnotations
+  final case class fieldName(name: String) extends SqlAnnotations
+  final case class id() extends SqlAnnotations
+  final case class hidden() extends SqlAnnotations
+  final case class ignored() extends SqlAnnotations
+  final case class replicationObj(replication: ObjectReplication) extends SqlAnnotations
   final case class replicationSeq(replication: SequenceReplication) extends SqlAnnotations
 }
-
-
 
 trait EasyUpdater[A] {
   def update(value: A)(implicit xa: Transactor[IO]): Either[String, IO[String]]
@@ -178,8 +178,7 @@ object EasyUpdater {
         }
         idParam.isDefined
       }.getOrElse(
-        throw new RuntimeException(s"No id field defined for type ${ctx.typeName}. Define one using the @id Annotation")
-      )
+        throw new RuntimeException(s"No id field defined for type ${ctx.typeName}. Define one using the @id Annotation"))
 
       val remainingParams = ctx.parameters.filterNot(_ == idField)
 
@@ -193,16 +192,16 @@ object EasyUpdater {
 
       val updates = values
         .foldLeft[List[String]](Nil)((acc, next) => {
-        next match {
-          case Right(v) => v.unsafeRunSync() :: acc
-          case Left(v)  => v :: acc
-        }
-      })
+          next match {
+            case Right(v) => v.unsafeRunSync() :: acc
+            case Left(v) => v :: acc
+          }
+        })
         .reverse
       val fieldsString = labels.mkString("(", ", ", ")")
       val valuesString = updates.map(str => s"'$str'").mkString("(", ", ", ")")
       val onConflictString = s" on conflict (${SqlUtils.findFieldName(SqlUtils.findIdField(ctx))})  do "
-      val fieldUpdates = remainingParams.map(SqlUtils.findFieldName).zip(updates.tail).map { case (fieldName, fieldValue) => s"$fieldName = '$fieldValue'"}.mkString(", ")
+      val fieldUpdates = remainingParams.map(SqlUtils.findFieldName).zip(updates.tail).map { case (fieldName, fieldValue) => s"$fieldName = '$fieldValue'" }.mkString(", ")
       val updateString = s"update set $fieldUpdates"
       val update = Fragment.const("""insert into """) ++
         Fragment.const(tableName) ++
@@ -224,8 +223,7 @@ object EasyUpdater {
       }
       println(update.toString())
       Right(
-        update.updateWithLogHandler(LogHandler.jdkLogHandler).withUniqueGeneratedKeys[String](idCol.head).transact(xa)
-      )
+        update.updateWithLogHandler(LogHandler.jdkLogHandler).withUniqueGeneratedKeys[String](idCol.head).transact(xa))
     }
   }
   def dispatch[T](ctx: SealedTrait[Typeclass, T]): EasyUpdater[T] = new EasyUpdater[T] {
@@ -251,12 +249,6 @@ object EasyUpdater {
 
   implicit def gen[T]: EasyUpdater[T] = macro Magnolia.gen[T]
 }
-
-
-
-
-
-
 
 //object Saver extends App {
 //  implicit val (url, xa) = PostgresStuff.go()

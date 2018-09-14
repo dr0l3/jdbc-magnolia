@@ -29,7 +29,6 @@ object GraphQL extends App {
 
   implicit val userRepo = RepoOps.toRepo[Int, User](RepoOps.gen[User])
 
-
   class Mutation(repo: Repo[Int, User]) {
     @GraphQLField
     def addUser(name: String, age: Int): User = {
@@ -48,9 +47,7 @@ object GraphQL extends App {
   val queryType = ObjectType(
     "query",
     fields[RepoContext, Unit](
-      Field("user", OptionType(userType), arguments = idArg :: Nil, resolve = c => c.ctx.repo.findById(c arg idArg).unsafeRunSync())
-    )
-  )
+      Field("user", OptionType(userType), arguments = idArg :: Nil, resolve = c => c.ctx.repo.findById(c arg idArg).unsafeRunSync())))
 
   val schema = Schema(queryType, Some(mutationType))
 
@@ -78,21 +75,21 @@ object GraphQL extends App {
   val repoContext = RepoContext(new Mutation(userRepo), userRepo)
 
   val prog = for {
-    _     <- userRepo.createTables()
-    id    <- userRepo.insert(exampleUser)
+    _ <- userRepo.createTables()
+    id <- userRepo.insert(exampleUser)
     found <- userRepo.findById(id)
     gql <- IO.fromFuture {
-            IO(Executor.execute(schema, query, repoContext))
-          }
+      IO(Executor.execute(schema, query, repoContext))
+    }
     gql2 <- IO.fromFuture {
       IO(Executor.execute(schema, mutQuery, repoContext))
     }
     after <- userRepo.findById(2)
   } yield (found, gql, gql2, after)
 
-  val start         = System.nanoTime() nanos;
+  val start = System.nanoTime() nanos;
   val (friend, gql, gql2, after) = prog.unsafeRunSync()
-  val end           = System.nanoTime() nanos;
+  val end = System.nanoTime() nanos;
 
   println((end - start).toMillis)
 
