@@ -1,9 +1,10 @@
-import Example.{ Friend, Person, Stranger }
-import SqlAnnotations.{ id, tableName }
+import Example.{Friend, Person, Stranger}
+import SqlAnnotations.{id, tableName}
 import cats.effect.IO
+import doobie.util.log.LogHandler
 
 import scala.collection.mutable
-import scala.concurrent.{ Await, Future }
+import scala.concurrent.{Await, Future}
 import sangria.execution.Executor
 import sangria.macros.derive._
 import sangria.schema._
@@ -24,6 +25,7 @@ object GraphQL extends App {
       str.toInt
   }
   implicit val (url, xa) = PostgresStuff.go()
+  implicit val logHandler = LogHandler.jdkLogHandler
 
   @tableName("users") case class User(@id id: Int, name: String, age: Int)
 

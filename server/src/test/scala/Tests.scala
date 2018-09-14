@@ -15,8 +15,9 @@ import scalacheckmagnolia.MagnoliaArbitrary._
 import org.scalacheck._
 
 object Shared {
-  implicit val (url, xa) = PostgresStuff.goLive();
+  implicit val (url, xa) = PostgresStuff.go()
   implicit val arbString = Arbitrary[String](Gen.alphaStr)
+  implicit val logHandler = LogHandler.nop
 
   implicit val idTransformer = new IdTransformer[Int] {
     override def fromString(str: String): Int = str.toInt
@@ -32,7 +33,7 @@ object Tests extends Properties("RepoProps") {
 
   case class SimpleCaseClassExample(@id id: Int, string: String, double: Double, anotherInt: Int, bool: Boolean)
 
-  val caseClassRepo = RepoOps.toRepo(RepoOps.gen[SimpleCaseClassExample])(transactor = xa, idTransformer = idTransformer)
+  val caseClassRepo = RepoOps.toRepo(RepoOps.gen[SimpleCaseClassExample])(transactor = xa, idTransformer = idTransformer, logHandler = logHandler)
 
   implicit val arb = implicitly[Arbitrary[SimpleCaseClassExample]]
 
@@ -58,7 +59,7 @@ object TraitTest extends Properties("Repo.trait") {
   case class FirstImplementation(@id id: String, string: String, double: Double) extends Trait
   case class SecondImplementation(@id id: String, int: Int, double: Double)      extends Trait
 
-  val traitRepo = RepoOps.toRepo(RepoOps.gen[Trait])(transactor = xa, idTransformer = idTransformerString)
+  val traitRepo = RepoOps.toRepo(RepoOps.gen[Trait])(transactor = xa, idTransformer = idTransformerString, logHandler = logHandler)
 
   implicit val arbTrait = implicitly[Arbitrary[Trait]]
 
@@ -91,7 +92,7 @@ object ComplexTests extends Properties("Repo.complex") {
   case class E(@id string: String, age: Int, height: Double) extends C
 
   implicit val arbComplex = implicitly[Arbitrary[ComplexExample]]
-  val complexRepo         = RepoOps.toRepo(RepoOps.gen[ComplexExample])(transactor = xa, idTransformer = idTransformer)
+  val complexRepo         = RepoOps.toRepo(RepoOps.gen[ComplexExample])(transactor = xa, idTransformer = idTransformer, logHandler = logHandler)
 
   property("Can insert and find complex example") = forAll { complex: ComplexExample =>
     val prog = for {
@@ -109,7 +110,7 @@ object ListTest extends Properties("Repo.list") {
   case class Lists(@id id: Int, string: String, list: List[String], list2: List[SomeCaseClass])
   case class SomeCaseClass(@id string: Int, anotherString: String)
   implicit val listsArb = implicitly[Arbitrary[Lists]]
-  val listsRepo         = RepoOps.toRepo(RepoOps.gen[Lists])(transactor = xa, idTransformer = idTransformer)
+  val listsRepo         = RepoOps.toRepo(RepoOps.gen[Lists])(transactor = xa, idTransformer = idTransformer, logHandler = logHandler)
 
   property("can insert find lists") = forAll { l: Lists =>
     val prog = for {
@@ -134,17 +135,12 @@ object ListTest extends Properties("Repo.list") {
 }
 
 object AnnotationTests extends Properties("Repo.annotation") {
-  implicit val (url, xa) = PostgresStuff.go();
-  implicit val arbString = Arbitrary[String](Gen.alphaStr)
-
-  implicit val idTransformer = new IdTransformer[Int] {
-    override def fromString(str: String): Int = str.toInt
-  }
+  import Shared._
 
   @tableName("random_table") case class WithAnnotations(@id @fieldName("random_name") id: Int, @fieldName("another") str: String)
   implicit val annotArb = implicitly[Arbitrary[WithAnnotations]]
 
-  val annoRepo = RepoOps.toRepo(RepoOps.gen[WithAnnotations])(transactor = xa, idTransformer = idTransformer)
+  val annoRepo = RepoOps.toRepo(RepoOps.gen[WithAnnotations])(transactor = xa, idTransformer = idTransformer, logHandler = logHandler)
 
   property("Can insert and find things with annotations") = forAll { a: WithAnnotations =>
     val prog = for {

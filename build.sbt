@@ -16,7 +16,7 @@ lazy val commonScalaVersion = Seq(
 )
 
 lazy val twitterVersion = "18.6.0"
-lazy val catsVersion = "1.1.0"
+lazy val catsVersion = "1.4.0"
 lazy val kittensVersion = "1.0.0-RC3"
 lazy val monocleVersion = "1.5.0"
 lazy val circeVersion = "0.9.1"
@@ -29,6 +29,7 @@ lazy val commonDeps = Seq(
     "org.typelevel" %% "cats-core" % catsVersion,
     "org.typelevel" %% "cats-mtl-core" % "0.2.3",
     "org.typelevel" %% "kittens" % "1.0.0-RC3",
+    "org.typelevel" %% "cats-effect" % "1.0.0",
     "com.github.julien-truffaut" %%  "monocle-core"  % monocleVersion,
     "com.github.julien-truffaut" %%  "monocle-macro" % monocleVersion,
     "com.github.julien-truffaut" %%  "monocle-law"   % monocleVersion % "test",
