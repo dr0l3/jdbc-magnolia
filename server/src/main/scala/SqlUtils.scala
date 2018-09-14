@@ -1,4 +1,27 @@
+import java.nio.file.Paths
+
+import LetsDoThis.{ Default, TypeNameInfo }
+import SqlAnnotations._
+import cats._
+import cats.data._
+import cats.effect._
+import cats.implicits._
+import doobie._
+import doobie.implicits._
+import ru.yandex.qatools.embed.postgresql.EmbeddedPostgres
+import ru.yandex.qatools.embed.postgresql.EmbeddedPostgres._
+import magnolia.{ Param, _ }
+import shapeless.tupled._
+import scala.concurrent.duration._
+
+import scala.annotation.Annotation
+import scala.language.experimental.macros
+import java.nio.file.Paths
+
+import cats.effect.IO
+import doobie.{ LogHandler, Transactor }
 import magnolia.{ CaseClass, Param, SealedTrait, Subtype }
+import ru.yandex.qatools.embed.postgresql.EmbeddedPostgres
 object SqlUtils {
   def idTypeString[A](a: A): Option[String] =
     a match {
@@ -142,4 +165,25 @@ object SqlUtils {
         case UUID => UUID
       }
   }
+}
+
+object PostgresStuff {
+  def go(): (String, Transactor.Aux[IO, Unit]) = {
+    val postgres = new EmbeddedPostgres()
+
+    val path = Paths.get("/home/drole/.embedpostgresql")
+    val url = postgres.start(EmbeddedPostgres.cachedRuntimeConfig(path))
+
+    implicit val xa: Transactor.Aux[IO, Unit] = Transactor.fromDriverManager[IO]("org.postgresql.Driver", url)
+    (url, xa)
+  }
+}
+
+sealed class SqlAnnotations extends Annotation
+object SqlAnnotations {
+  final case class tableName(name: String) extends SqlAnnotations
+  final case class fieldName(name: String) extends SqlAnnotations
+  final case class id() extends SqlAnnotations
+  final case class hidden() extends SqlAnnotations
+  final case class ignored() extends SqlAnnotations
 }
