@@ -1,15 +1,15 @@
 import java.lang
 
-import SqlAnnotations.{fieldName, id, tableName}
-import cats.effect.{Effect, IO}
-import doobie.{Fragment, LogHandler, Transactor}
-import magnolia.{CaseClass, Magnolia, SealedTrait}
+import SqlAnnotations.{ fieldName, id, tableName }
+import cats.effect.{ Effect, IO }
+import doobie.{ Fragment, LogHandler, Transactor }
+import magnolia.{ CaseClass, Magnolia, SealedTrait }
 import cats.Traverse
 import cats.effect.IO
-import doobie.{Fragment, LogHandler, Transactor}
-import magnolia.{CaseClass, Magnolia, SealedTrait}
+import doobie.{ Fragment, LogHandler, Transactor }
+import magnolia.{ CaseClass, Magnolia, SealedTrait }
 import cats.effect.IO
-import doobie.{Fragment, LogHandler, Transactor}
+import doobie.{ Fragment, LogHandler, Transactor }
 import magnolia._
 import cats._
 import cats.data._
@@ -35,7 +35,9 @@ trait IdTransformer[A] {
   def fromString(str: String): A
 }
 
-class RepoFromOps[A, B](repoOps: RepoOps[B])(implicit val transactor: Transactor[IO], idTransformer: IdTransformer[A], logHandler: LogHandler)
+class RepoFromOps[A, B](repoOps: RepoOps[B])(implicit val transactor: Transactor[IO],
+                                             idTransformer: IdTransformer[A],
+                                             logHandler: LogHandler)
     extends Repo[A, B] {
   val desc = repoOps.describe(false, false, TableName(""), null)
 
@@ -47,7 +49,6 @@ class RepoFromOps[A, B](repoOps: RepoOps[B])(implicit val transactor: Transactor
   override def insert(value: B): IO[A] =
     for {
       res <- repoOps.save(value, desc, None)
-      _   = println(res)
     } yield {
       idTransformer.fromString(res.right.get)
     }
@@ -57,12 +58,15 @@ class RepoFromOps[A, B](repoOps: RepoOps[B])(implicit val transactor: Transactor
 }
 
 trait RepoOps[A] {
-  def findById(id: String, tableDescription: EntityDesc)(implicit xa: Transactor[IO], logHandler: LogHandler): IO[Option[A]]
+  def findById(id: String, tableDescription: EntityDesc)(implicit xa: Transactor[IO],
+                                                         logHandler: LogHandler): IO[Option[A]]
   def save(value: A, tableDescription: EntityDesc, assignedId: Option[String] = None)(
     implicit
-    xa: Transactor[IO], logHandler: LogHandler
+    xa: Transactor[IO],
+    logHandler: LogHandler
   ): IO[Either[String, String]]
-  def createTable(tableDescription: EntityDesc)(implicit xa: Transactor[IO], logHandler: LogHandler): IO[Either[String, Int]]
+  def createTable(tableDescription: EntityDesc)(implicit xa: Transactor[IO],
+                                                logHandler: LogHandler): IO[Either[String, Int]]
   def describe(isId: Boolean,
                isSubtypeTable: Boolean,
                assignedTableName: TableName,
@@ -74,7 +78,8 @@ object RepoOps {
 
   def combine[T](ctx: CaseClass[Typeclass, T]): RepoOps[T] = new RepoOps[T] {
     override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO], logHandler: LogHandler): IO[Option[T]] = {
+                                                                    xa: Transactor[IO],
+                                                                    logHandler: LogHandler): IO[Option[T]] = {
       val tableName   = SqlUtils.findTableName(ctx)
       val idField     = SqlUtils.findIdField(ctx)
       val idFieldName = SqlUtils.findFieldName(idField)
@@ -123,7 +128,8 @@ object RepoOps {
 
     override def save(value: T, tableDescription: EntityDesc, assignedId: Option[String])(
       implicit
-      xa: Transactor[IO], logHandler: LogHandler
+      xa: Transactor[IO],
+      logHandler: LogHandler
     ): IO[Either[String, String]] = {
       // Three cases
       // - Subtype table, id is provided
@@ -207,7 +213,8 @@ object RepoOps {
     }
 
     override def createTable(tableDescription: EntityDesc)(implicit
-                                                           xa: Transactor[IO], logHandler: LogHandler): IO[Either[String, Int]] = {
+                                                           xa: Transactor[IO],
+                                                           logHandler: LogHandler): IO[Either[String, Int]] = {
       // Find the tablename
       val tableName = SqlUtils.findTableName(ctx)
 
@@ -322,33 +329,30 @@ object RepoOps {
 
   def dispatch[T](ctx: SealedTrait[Typeclass, T]): RepoOps[T] = new RepoOps[T] {
     override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO], logHandler: LogHandler): IO[Option[T]] = {
+                                                                    xa: Transactor[IO],
+                                                                    logHandler: LogHandler): IO[Option[T]] = {
       val tableDesc = tableDescription match {
         case t: TableDescSumType => t
         case _                   => throw new RuntimeException("ms")
       }
-      val res = ctx.subtypes.map { subType =>
+      val subTypeProgs = ctx.subtypes.toList.traverse { subType =>
         val subTable = SqlUtils.entityDescForSubtype(subType, tableDesc, ctx)
         subType.typeclass
           .findById(id, subTable)
-          .map(_.map { stuff =>
-            val t = subType.cast(stuff)
-            t
+          .map(_.map { stuff => subType.cast(stuff)
           })
       }
-      val meh: IO[List[Option[Any]]] = res.toList.sequence
 
-      meh.map(
-        list =>
-          list.collectFirst {
-            case Some(a) => a.asInstanceOf[T]
+      subTypeProgs.map { _.collectFirst {
+          case Some(a) => a.asInstanceOf[T]
         }
-      )
+      }
     }
 
     override def save(value: T, tableDescription: EntityDesc, assignedId: Option[String])(
       implicit
-      xa: Transactor[IO], logHandler: LogHandler
+      xa: Transactor[IO],
+      logHandler: LogHandler
     ): IO[Either[String, String]] = {
       // Insert in base table
       val tableDesc = tableDescription match {
@@ -361,12 +365,18 @@ object RepoOps {
       val baseTableName = tableDesc.tableName.name
       val isAutofillId  = SqlUtils.isAutofillFieldType(tableDesc.idColumn.idValueDesc.idType)
       val colName       = tableDesc.idColumn.columnName
+      val subtypeColName = tableDesc.subtypeTableNameCol.columnName.name
+      val subTypeString = ctx.subtypes.find { subType =>
+        Try(
+          subType cast value
+        ).isSuccess
+      }.map(_.typeName.short).getOrElse(throw new RuntimeException(s"Unable to figure subtype $value of type ${ctx.typeName.short}"))
       val sql =
         if (isAutofillId)
-          s"insert into $baseTableName (${colName.name}) values (DEFAULT)"
+          s"insert into $baseTableName (${colName.name}, $subtypeColName) values (DEFAULT, '$subTypeString')"
         else {
           val generatedId = java.util.UUID.randomUUID().toString // TODO: Fix
-          s"insert into $baseTableName (${colName.name}) values ('$generatedId')"
+          s"insert into $baseTableName (${colName.name}, $subtypeColName) values ('$generatedId', $subTypeString)"
         }
 
       println(sql)
@@ -387,7 +397,8 @@ object RepoOps {
     }
 
     override def createTable(tableDescription: EntityDesc)(implicit
-                                                           xa: Transactor[IO], logHandler: LogHandler): IO[Either[String, Int]] = {
+                                                           xa: Transactor[IO],
+                                                           logHandler: LogHandler): IO[Either[String, Int]] = {
       // Create base table
       // Find the tablename
 
@@ -406,7 +417,16 @@ object RepoOps {
       val idFieldName = tableDesc.idColumn.columnName.name
       val idFieldType = SqlUtils.idTypeToString(tableDesc.idColumn.idValueDesc.idType)
 
-      val sql      = s"create table if not exists $tableName ($idFieldName $idFieldType, primary key ($idFieldName) )"
+      val subtypeColName = tableDesc.subtypeTableNameCol.columnName.name
+      val subtTypeColType = tableDesc.subtypeTableNameCol.regularValue match {
+        case RegularLeaf(dataType)      =>
+          SqlUtils.idTypeToString(dataType)
+        case other =>
+          val error = s"Expected subtypeColType of type ${ctx.typeName.short} to be of type regularleaf, but was $other"
+          throw new RuntimeException(error)
+      }
+
+      val sql = s"create table if not exists $tableName ($idFieldName $idFieldType, $subtypeColName $subtTypeColType primary key ($idFieldName) )"
       val fragment = Fragment.const(sql)
 
       // Create subtype tables
@@ -455,8 +475,9 @@ object RepoOps {
       }
       val idColDataType = SqlUtils.narrowToAutoIncrementIfPossible(subTypeDesciptions.head.idColumn.idValueDesc.idType)
       val idCol         = IdColumn(idFieldName, IdValueDesc(idColDataType))
+      val subTypeCol = RegularColumn(ColumnName(s"${ctx.typeName.short}_type"), RegularLeaf(Text))
 
-      TableDescSumType(baseTableName, idCol, subTypeDesciptions)
+      TableDescSumType(baseTableName, idCol, subTypeCol, subTypeDesciptions)
     }
   }
 
@@ -464,17 +485,20 @@ object RepoOps {
 
   implicit val intUpdater: RepoOps[Int] = new RepoOps[Int] {
     override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO], logHandler: LogHandler): IO[Option[Int]] =
+                                                                    xa: Transactor[IO],
+                                                                    logHandler: LogHandler): IO[Option[Int]] =
       IO(Some(id.toInt))
 
     override def save(value: Int, tableDescription: EntityDesc, assignedId: Option[String])(
       implicit
-      xa: Transactor[IO], logHandler: LogHandler
+      xa: Transactor[IO],
+      logHandler: LogHandler
     ): IO[Either[String, String]] =
       IO(Right(value.toString))
 
     override def createTable(tableDescription: EntityDesc)(implicit
-                                                           xa: Transactor[IO], logHandler: LogHandler): IO[Either[String, Int]] =
+                                                           xa: Transactor[IO],
+                                                           logHandler: LogHandler): IO[Either[String, Int]] =
       IO(Right(0))
 
     override def describe(isId: Boolean,
@@ -486,17 +510,20 @@ object RepoOps {
 
   implicit val stringUpdater: RepoOps[String] = new RepoOps[String] {
     override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO], logHandler: LogHandler): IO[Option[String]] =
+                                                                    xa: Transactor[IO],
+                                                                    logHandler: LogHandler): IO[Option[String]] =
       IO(Some(id))
 
     override def save(value: String, tableDescription: EntityDesc, assignedId: Option[String])(
       implicit
-      xa: Transactor[IO], logHandler: LogHandler
+      xa: Transactor[IO],
+      logHandler: LogHandler
     ): IO[Either[String, String]] =
       IO(Right(value.toString))
 
     override def createTable(tableDescription: EntityDesc)(implicit
-                                                           xa: Transactor[IO], logHandler: LogHandler): IO[Either[String, Int]] =
+                                                           xa: Transactor[IO],
+                                                           logHandler: LogHandler): IO[Either[String, Int]] =
       IO(Right(0))
 
     override def describe(isId: Boolean,
@@ -508,17 +535,20 @@ object RepoOps {
 
   implicit val doubleUpdater: RepoOps[Double] = new RepoOps[Double] {
     override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO], logHandler: LogHandler): IO[Option[Double]] =
+                                                                    xa: Transactor[IO],
+                                                                    logHandler: LogHandler): IO[Option[Double]] =
       IO(Some(id.toDouble))
 
     override def save(value: Double, tableDescription: EntityDesc, assignedId: Option[String])(
       implicit
-      xa: Transactor[IO], logHandler: LogHandler
+      xa: Transactor[IO],
+      logHandler: LogHandler
     ): IO[Either[String, String]] =
       IO(Right(value.toString))
 
     override def createTable(tableDescription: EntityDesc)(implicit
-                                                           xa: Transactor[IO], logHandler: LogHandler): IO[Either[String, Int]] =
+                                                           xa: Transactor[IO],
+                                                           logHandler: LogHandler): IO[Either[String, Int]] =
       IO(Right(0))
 
     override def describe(isId: Boolean,
@@ -530,33 +560,31 @@ object RepoOps {
 
   implicit val boolRepo: RepoOps[Boolean] = new Typeclass[Boolean] {
     override def findById(id: String, tableDescription: EntityDesc)(
-      implicit xa: transactor.Transactor[IO], logHandler: LogHandler
-    ): IO[Option[Boolean]] = {
+      implicit xa: transactor.Transactor[IO],
+      logHandler: LogHandler
+    ): IO[Option[Boolean]] =
       IO(Some(id.contentEquals("t")))
-    }
-    override def save(value: Boolean,
-                      tableDescription: EntityDesc,
-                      assignedId: Option[String])(
-      implicit xa: Transactor[IO], logHandler: LogHandler
-    ): IO[Either[String, String]] = {
+    override def save(value: Boolean, tableDescription: EntityDesc, assignedId: Option[String])(
+      implicit xa: Transactor[IO],
+      logHandler: LogHandler
+    ): IO[Either[String, String]] =
       IO(Right(value.toString))
-    }
     override def createTable(tableDescription: EntityDesc)(
-      implicit xa: Transactor[IO], logHandler: LogHandler
-    ): IO[Either[String, Int]] = {
+      implicit xa: Transactor[IO],
+      logHandler: LogHandler
+    ): IO[Either[String, Int]] =
       IO(Right(0))
-    }
     override def describe(isId: Boolean,
                           isSubtypeTable: Boolean,
                           assignedTableName: TableName,
-                          parentIdColumn: IdColumn): EntityDesc = {
-      if(isId) throw new RuntimeException("Why are you using a boolean as an Id you idiot?") else RegularLeaf(Bool)
-    }
-}
+                          parentIdColumn: IdColumn): EntityDesc =
+      if (isId) throw new RuntimeException("Why are you using a boolean as an Id you idiot?") else RegularLeaf(Bool)
+  }
 
   implicit def listOps[A](implicit ops: RepoOps[A]) = new Typeclass[List[A]] {
     override def createTable(tableDescription: EntityDesc)(implicit
-                                                           xa: Transactor[IO], logHandler: LogHandler): IO[Either[String, Int]] = {
+                                                           xa: Transactor[IO],
+                                                           logHandler: LogHandler): IO[Either[String, Int]] = {
       val desc = tableDescription match {
         case t: TableDescSeqType => t
         case other =>
@@ -608,7 +636,8 @@ object RepoOps {
 
     override def save(value: List[A], tableDescription: EntityDesc, assignedId: Option[String])(
       implicit
-      xa: Transactor[IO], logHandler: LogHandler
+      xa: Transactor[IO],
+      logHandler: LogHandler
     ): IO[Either[String, String]] = {
       // decide if this is a value or an object
       val desc = tableDescription match {
@@ -642,8 +671,8 @@ object RepoOps {
     }
 
     override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO], logHandler: LogHandler): IO[Option[List[A]]] = {
-      println(s"LIST FINDER")
+                                                                    xa: Transactor[IO],
+                                                                    logHandler: LogHandler): IO[Option[List[A]]] = {
       val desc = tableDescription match {
         case t: TableDescSeqType => t
         case other =>
@@ -676,7 +705,8 @@ object RepoOps {
 
   def toRepo[A, B](repoOps: RepoOps[B])(implicit
                                         transactor: Transactor[IO],
-                                        idTransformer: IdTransformer[A], logHandler: LogHandler): Repo[A, B] =
+                                        idTransformer: IdTransformer[A],
+                                        logHandler: LogHandler): Repo[A, B] =
     new RepoFromOps(repoOps)
 }
 
@@ -691,7 +721,7 @@ object Example extends App {
     override def fromString(str: String): Int =
       str.toInt
   }
-  implicit val (url, xa) = PostgresStuff.go()
+  implicit val (url, xa)  = PostgresStuff.go()
   implicit val logHandler = LogHandler.jdkLogHandler
 
   val personRepo      = RepoOps.toRepo[Int, Person](RepoOps.gen[Person])
