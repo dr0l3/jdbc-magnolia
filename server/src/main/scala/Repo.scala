@@ -257,12 +257,12 @@ object RepoOps {
                 TableDescRegular(tableName, idColumn, additionalColumns, referencesConstraint, isSubtypeTable)
               )
               (Some(colDefinition), Some(foreignKeyDownstream), Some(createChild))
-            case TableDescSumType(tableName, idColumn, subType) =>
+            case TableDescSumType(tableName, idColumn, subTypeCol, subType) =>
               val columnType           = SqlUtils.idTypeToString(idColumn.idValueDesc.idType)
               val foreignKeyColName    = idColumn.columnName.name
               val foreignKeyDownstream = s"foreign key ($columnName) references ${tableName.name} ($foreignKeyColName)"
               val colDefinition        = s"$columnName $columnType"
-              val createChild          = param.typeclass.createTable(TableDescSumType(tableName, idColumn, subType))
+              val createChild          = param.typeclass.createTable(TableDescSumType(tableName, idColumn, subTypeCol, subType))
               (Some(colDefinition), Some(foreignKeyDownstream), Some(createChild))
             case t: TableDescSeqType =>
               val prog = param.typeclass.createTable(t)
@@ -339,11 +339,13 @@ object RepoOps {
         val subTable = SqlUtils.entityDescForSubtype(subType, tableDesc, ctx)
         subType.typeclass
           .findById(id, subTable)
-          .map(_.map { stuff => subType.cast(stuff)
+          .map(_.map { stuff =>
+            subType.cast(stuff)
           })
       }
 
-      subTypeProgs.map { _.collectFirst {
+      subTypeProgs.map {
+        _.collectFirst {
           case Some(a) => a.asInstanceOf[T]
         }
       }
@@ -362,21 +364,22 @@ object RepoOps {
             s"Tabledescription for type ${ctx.typeName.short} was expected to be of type TableDescSumType, but was $other"
           throw new RuntimeException(errorMessage)
       }
-      val baseTableName = tableDesc.tableName.name
-      val isAutofillId  = SqlUtils.isAutofillFieldType(tableDesc.idColumn.idValueDesc.idType)
-      val colName       = tableDesc.idColumn.columnName
+      val baseTableName  = tableDesc.tableName.name
+      val isAutofillId   = SqlUtils.isAutofillFieldType(tableDesc.idColumn.idValueDesc.idType)
+      val colName        = tableDesc.idColumn.columnName
       val subtypeColName = tableDesc.subtypeTableNameCol.columnName.name
       val subTypeString = ctx.subtypes.find { subType =>
         Try(
           subType cast value
         ).isSuccess
-      }.map(_.typeName.short).getOrElse(throw new RuntimeException(s"Unable to figure subtype $value of type ${ctx.typeName.short}"))
+      }.map(_.typeName.short)
+        .getOrElse(throw new RuntimeException(s"Unable to figure subtype $value of type ${ctx.typeName.short}"))
       val sql =
         if (isAutofillId)
           s"insert into $baseTableName (${colName.name}, $subtypeColName) values (DEFAULT, '$subTypeString')"
         else {
           val generatedId = java.util.UUID.randomUUID().toString // TODO: Fix
-          s"insert into $baseTableName (${colName.name}, $subtypeColName) values ('$generatedId', $subTypeString)"
+          s"insert into $baseTableName (${colName.name}, $subtypeColName) values ('$generatedId', '$subTypeString')"
         }
 
       println(sql)
@@ -419,14 +422,15 @@ object RepoOps {
 
       val subtypeColName = tableDesc.subtypeTableNameCol.columnName.name
       val subtTypeColType = tableDesc.subtypeTableNameCol.regularValue match {
-        case RegularLeaf(dataType)      =>
+        case RegularLeaf(dataType) =>
           SqlUtils.idTypeToString(dataType)
         case other =>
           val error = s"Expected subtypeColType of type ${ctx.typeName.short} to be of type regularleaf, but was $other"
           throw new RuntimeException(error)
       }
 
-      val sql = s"create table if not exists $tableName ($idFieldName $idFieldType, $subtypeColName $subtTypeColType primary key ($idFieldName) )"
+      val sql =
+        s"create table if not exists $tableName ($idFieldName $idFieldType, $subtypeColName $subtTypeColType, primary key ($idFieldName) )"
       val fragment = Fragment.const(sql)
 
       // Create subtype tables
@@ -475,7 +479,7 @@ object RepoOps {
       }
       val idColDataType = SqlUtils.narrowToAutoIncrementIfPossible(subTypeDesciptions.head.idColumn.idValueDesc.idType)
       val idCol         = IdColumn(idFieldName, IdValueDesc(idColDataType))
-      val subTypeCol = RegularColumn(ColumnName(s"${ctx.typeName.short}_type"), RegularLeaf(Text))
+      val subTypeCol    = RegularColumn(ColumnName(s"${ctx.typeName.short}_type"), RegularLeaf(Text))
 
       TableDescSumType(baseTableName, idCol, subTypeCol, subTypeDesciptions)
     }
@@ -597,11 +601,11 @@ object RepoOps {
       val idColType =
         SqlUtils.idTypeToString(SqlUtils.convertToNonAutoIncrementIfPossible(desc.idColumn.idValueDesc.idType))
       val (downStreamColName, downStreamColType) = desc.entityDesc match {
-        case TableDescRegular(_, idColumn, additionalColumns, referencesConstraint, isSubtypeTable) =>
+        case TableDescRegular(_, idColumn, _, _, _) =>
           (Some(idColumn.columnName.name), idColumn.idValueDesc.idType)
-        case TableDescSumType(tableName, idColumn, subType) =>
+        case TableDescSumType(_, idColumn, _, _) =>
           (Some(idColumn.columnName.name), idColumn.idValueDesc.idType)
-        case TableDescSeqType(tableName, idColumn, entityDesc) =>
+        case TableDescSeqType(_, idColumn, _) =>
           (Some(idColumn.columnName.name), idColumn.idValueDesc.idType)
         case IdLeaf(idValueDesc) =>
           (None, idValueDesc.idType)
@@ -651,7 +655,7 @@ object RepoOps {
       val tableName = desc.tableName.name
       val downstreamColName = desc.entityDesc match {
         case TableDescRegular(_, idColumn, _, _, _) => idColumn.columnName.name
-        case TableDescSumType(_, idColumn, _)       => idColumn.columnName.name
+        case TableDescSumType(_, idColumn, _, _)    => idColumn.columnName.name
         case TableDescSeqType(_, idColumn, _)       => idColumn.columnName.name
         case IdLeaf(_)                              => "value"
         case RegularLeaf(_)                         => "value"
@@ -684,7 +688,7 @@ object RepoOps {
       val idColName = desc.idColumn.columnName.name
       val downstreamColName = desc.entityDesc match {
         case TableDescRegular(_, idColumn, _, _, _) => idColumn.columnName.name
-        case TableDescSumType(_, idColumn, _)       => idColumn.columnName.name
+        case TableDescSumType(_, idColumn, _, _)    => idColumn.columnName.name
         case TableDescSeqType(_, idColumn, _)       => idColumn.columnName.name
         case IdLeaf(_)                              => "value"
         case RegularLeaf(_)                         => "value"

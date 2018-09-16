@@ -1,6 +1,5 @@
 import java.nio.file.Paths
 
-import LetsDoThis.{ Default, TypeNameInfo }
 import SqlAnnotations._
 import cats._
 import cats.data._
