@@ -101,21 +101,6 @@ object RepoOps {
       }.traverse { param =>
         val (_, descForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
         param.typeclass.findById(id, descForParam).map(res => param.index -> res)
-//          val fieldName = SqlUtils.findFieldName(param)
-//          val sqlStr    = s"select $fieldName from $tableName where $idFieldName = '$id'"
-//          val queryResult = Fragment
-//            .const(sqlStr)
-//            .queryWithLogHandler[String](logHandler)
-//            .to[List]
-//            .transact(xa)
-//            .map(_.headOption)
-//
-//          val res = queryResult.flatMap { maybeString =>
-//            maybeString
-//              .map(str => param.typeclass.findById(str, descForParam))
-//              .getOrElse(IO(None))
-//          }
-//          res
       }
 
       val fieldNamesForNonSeqs = ctx.parameters.toList.filterNot { param =>
@@ -139,17 +124,6 @@ object RepoOps {
         param.index -> param
       }
 
-      val indexesForValues = ctx.parameters.filter { param =>
-        val (_, descForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
-        descForParam match {
-          case _: IdLeaf      => true
-          case _: RegularLeaf => true
-          case _              => false
-        }
-      }.map { param =>
-        param.index -> param
-      }
-
       val sqlStatement =
         s"select ${fieldNamesForNonSeqs.map(_._2).mkString(",")} from $tableName where $idFieldName = '$id'"
 
@@ -159,20 +133,20 @@ object RepoOps {
         listResults    <- subListPrograms
         nonListResults <- prog.transact(xa)
         (idProgs, valueProgs) = nonListResults.map {
-          case (index, obj) =>
-            val param = indexesForIds.find { case (index2, param) => index == index2 }
-            (index, param, obj)
+          case (sqlResultIndex, obj) =>
+            val param = indexesForIds.find { case (fieldIndex, param) => sqlResultIndex == fieldIndex }
+            (sqlResultIndex, param, obj)
         }.partition { opt => opt._2.isDefined }
-        zomg = idProgs.map{ case (index, param, obj) =>
-          param.map {
-            case (index2, param) =>
+        downStreamIdProgs = idProgs.flatMap{ case (_, maybeIdParam, obj) =>
+          maybeIdParam.map {
+            case (_, param) =>
               val (_, desc) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
               param.typeclass
                 .findById(obj.toString, desc)
                 .map(res => param.index -> res)
           }
-        }.flatten
-        idDownstreamResults   <- Traverse[List].sequence[IO, (Int, Option[Any])](zomg)
+        }
+        idDownstreamResults   <- Traverse[List].sequence[IO, (Int, Option[Any])](downStreamIdProgs)
         valueResults = valueProgs.map{ case (index, _, obj) => (index, Some(obj))}
         total = (idDownstreamResults ++ listResults ++ valueResults).sortBy(_._1)
       } yield Try(Some(ctx.rawConstruct(total.map(_._2.get)))).getOrElse(None)
