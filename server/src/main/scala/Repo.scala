@@ -92,39 +92,107 @@ object RepoOps {
           throw new RuntimeException(errorMessage)
       }
 
-      val subPrograms: IO[List[Option[Any]]] = ctx.parameters.toList.traverse { param =>
+      val subListPrograms: IO[List[(Int, Option[Any])]] = ctx.parameters.toList.filter { param =>
         val (_, descForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
-        val isSeqType = descForParam match {
+        descForParam match {
           case TableDescSeqType(_, _, _) => true
           case _                         => false
         }
-
-        if (isSeqType) {
-          param.typeclass.findById(id, descForParam)
-        } else {
-          val fieldName = SqlUtils.findFieldName(param)
-          val sqlStr    = s"select $fieldName from $tableName where $idFieldName = '$id'"
-          val queryResult = Fragment
-            .const(sqlStr)
-            .queryWithLogHandler[String](logHandler)
-            .to[List]
-            .transact(xa)
-            .map(_.headOption)
-
-          val res = queryResult.flatMap { maybeString =>
-            maybeString
-              .map(str => param.typeclass.findById(str, descForParam))
-              .getOrElse(IO(None))
-          }
-          res
-        }
-
+      }.traverse { param =>
+        val (_, descForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
+        param.typeclass.findById(id, descForParam).map(res => param.index -> res)
+//          val fieldName = SqlUtils.findFieldName(param)
+//          val sqlStr    = s"select $fieldName from $tableName where $idFieldName = '$id'"
+//          val queryResult = Fragment
+//            .const(sqlStr)
+//            .queryWithLogHandler[String](logHandler)
+//            .to[List]
+//            .transact(xa)
+//            .map(_.headOption)
+//
+//          val res = queryResult.flatMap { maybeString =>
+//            maybeString
+//              .map(str => param.typeclass.findById(str, descForParam))
+//              .getOrElse(IO(None))
+//          }
+//          res
       }
 
+      val fieldNamesForNonSeqs = ctx.parameters.toList.filterNot { param =>
+        val (_, decForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
+        decForParam match {
+          case t: TableDescSeqType => true
+          case _                   => false
+        }
+      }.map { param =>
+        param.index -> SqlUtils.findFieldName(param)
+      }
+
+      val indexesForIds = ctx.parameters.toList.filter { param =>
+        val (_, descForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
+        descForParam match {
+          case _: TableDescRegular => true
+          case _: TableDescSumType => true
+          case _                   => false
+        }
+      }.map { param =>
+        param.index -> param
+      }
+
+      val indexesForValues = ctx.parameters.filter { param =>
+        val (_, descForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
+        descForParam match {
+          case _: IdLeaf      => true
+          case _: RegularLeaf => true
+          case _              => false
+        }
+      }.map { param =>
+        param.index -> param
+      }
+
+      val sqlStatement =
+        s"select ${fieldNamesForNonSeqs.map(_._2).mkString(",")} from $tableName where $idFieldName = '$id'"
+
+      val prog = Fragment.const(sqlStatement).execWith(exec(fieldNamesForNonSeqs.map(_._1)))
+
       for {
-        subResults <- subPrograms
-      } yield Try(Some(ctx.rawConstruct(subResults.map(_.get)))).getOrElse(None)
+        listResults    <- subListPrograms
+        nonListResults <- prog.transact(xa)
+        (idProgs, valueProgs) = nonListResults.map {
+          case (index, obj) =>
+            val param = indexesForIds.find { case (index2, param) => index == index2 }
+            (index, param, obj)
+        }.partition { opt => opt._2.isDefined }
+        zomg = idProgs.map{ case (index, param, obj) =>
+          param.map {
+            case (index2, param) =>
+              val (_, desc) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
+              param.typeclass
+                .findById(obj.toString, desc)
+                .map(res => param.index -> res)
+          }
+        }.flatten
+        idDownstreamResults   <- Traverse[List].sequence[IO, (Int, Option[Any])](zomg)
+        valueResults = valueProgs.map{ case (index, _, obj) => (index, Some(obj))}
+        total = (idDownstreamResults ++ listResults ++ valueResults).sortBy(_._1)
+      } yield Try(Some(ctx.rawConstruct(total.map(_._2.get)))).getOrElse(None)
     }
+
+    // Read the specified columns from the resultset.
+    def readAll(cols: List[(Int, Int)]): ResultSetIO[List[List[(Int, Object)]]] =
+      readOne(cols).whileM[List](HRS.next)
+
+    // Take a list of column offsets and read a parallel list of values.
+    def readOne(cols: List[(Int, Int)]): ResultSetIO[List[(Int, Object)]] =
+      cols.traverse { case (col, fieldIndex) => FRS.getObject(col).map(res => fieldIndex -> res) } // always works
+
+    // Exec our PreparedStatement, examining metadata to figure out column count.
+    def exec(fieldIndexes: List[Int]): PreparedStatementIO[List[(Int, Object)]] =
+      for {
+        md   <- HPS.getMetaData // lots of useful info here
+        cols = (1 to md.getColumnCount).toList.zip(fieldIndexes)
+        data <- HPS.executeQuery(readAll(cols))
+      } yield data.flatten
 
     override def save(value: T, tableDescription: EntityDesc, assignedId: Option[String])(
       implicit
