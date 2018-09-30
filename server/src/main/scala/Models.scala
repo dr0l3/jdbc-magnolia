@@ -54,4 +54,8 @@ sealed trait FindResult[A]
 case class Value[A](value: Option[A]) extends FindResult[A]
 case class JoinResult[A](finder: ResultSet => Option[A]) extends FindResult[A]
 
-case class JoinDescription(aTable: TableName, aColumn: ColumnName, bTable: TableName, bColumn: ColumnName)
+sealed trait JoinType
+case object InnerJoin extends JoinType
+case object LeftJoin extends JoinType
+
+case class JoinDescription(aTable: TableName, aColumn: ColumnName, bTable: TableName, bColumn: ColumnName, joinType: JoinType)

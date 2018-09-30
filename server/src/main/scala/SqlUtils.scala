@@ -203,15 +203,15 @@ object SqlUtils {
         val fromThis = for {
           ust <- upstreamTableName
           usc <- upstreamColName
-        } yield JoinDescription(ust, usc, tableName, idColumn.columnName)
+        } yield JoinDescription(ust, usc, tableName, idColumn.columnName, InnerJoin)
 
         List(fromThis).flatten ++ ds
       case TableDescSumType(tableName, idColumn, subtypeTableNameCol, subType, joinOnFind) =>
-        val ds = subType.flatMap(subType => getJoinList(subType, Some(tableName), Some(subType.idColumn.columnName)))
+        val ds = subType.flatMap(subType => getJoinList(subType, Some(tableName), Some(idColumn.columnName)))
         val fromThis = for {
           ust <- upstreamTableName
           usc <- upstreamColName
-        } yield JoinDescription(ust, usc, tableName, idColumn.columnName)
+        } yield JoinDescription(ust, usc, tableName, idColumn.columnName, InnerJoin)
 
         List(fromThis).flatten ++ ds
       case TableDescSeqType(tableName, idColumn, entityDesc) =>
@@ -219,7 +219,7 @@ object SqlUtils {
         val fromThis = for {
         ust <- upstreamTableName
         usc <- upstreamColName
-        } yield JoinDescription(ust, usc, tableName, idColumn.columnName)
+        } yield JoinDescription(ust, usc, tableName, idColumn.columnName, InnerJoin)
         List(fromThis).flatten ++ ds
       case IdLeaf(idValueDesc, _, _)           =>
         Nil
@@ -236,9 +236,9 @@ object SqlUtils {
         val downStream = additionalColumns.flatMap(col => getCompleteColumnList(col.regularValue))
         fromThis ++ downStream
       case TableDescSumType(tableName, idColumn, subtypeTableNameCol, subType, joinOnFind) =>
-        val fromThis = tableName -> idColumn.columnName
+        val fromThis = List(tableName -> idColumn.columnName, tableName -> subtypeTableNameCol.columnName)
         val downStream = subType.toList.flatMap(getCompleteColumnList(_))
-        fromThis :: downStream
+        fromThis ++ downStream
       case TableDescSeqType(tableName, idColumn, entityDesc) =>
         val fromThis = tableName -> idColumn.columnName
         val downStream = getCompleteColumnList(entityDesc)

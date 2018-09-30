@@ -99,6 +99,9 @@ trait RepoOps[A] {
                                                          logHandler: LogHandler): IO[Option[A]]
 
   def findByIdJoin(id: String, tableDescription: EntityDesc)(implicit con: Connection): IO[FindResult[A]]
+
+//  def insert(value: A, tableDescription: EntityDesc)(implicit con: Connection): IO[Unit]
+
   def save(value: A, tableDescription: EntityDesc, assignedId: Option[String] = None)(
     implicit
     xa: Transactor[IO],
@@ -130,7 +133,6 @@ object RepoOps {
             s"Tabledescription for type ${ctx.typeName.short} was expected to be of type TableDescRegular, but was $other"
           throw new RuntimeException(errorMessage)
       }
-
       if (tableDesc.joinOnFind) {
         // create program to get result from resultset
         val paramsWithProgs = ctx.parameters.map { param =>
@@ -169,7 +171,7 @@ object RepoOps {
 
         //Plan:  Create massive join and let subprograms create params
         val joinDescriptions = SqlUtils.getJoinList(tableDesc, None, None).map { joinDesc =>
-          s"inner join ${joinDesc.bTable.name} as ${joinDesc.bTable.name} on ${joinDesc.aTable.name}.${joinDesc.aColumn.name} = ${joinDesc.bTable.name}.${joinDesc.bColumn.name}"
+          s"left join ${joinDesc.bTable.name} as ${joinDesc.bTable.name} on ${joinDesc.aTable.name}.${joinDesc.aColumn.name} = ${joinDesc.bTable.name}.${joinDesc.bColumn.name}"
         }
         val fullColList = SqlUtils.getCompleteColumnList(tableDesc).map {
           case (tableName, colName) => s"${tableName.name}.${colName.name} as ${tableName.name}${colName.name}"
@@ -497,7 +499,12 @@ object RepoOps {
         RegularColumn(ColumnName(fieldName), fieldDesc)
       }.toList
 
-      TableDescRegular(TableName(tableName), idFieldStructure, nonIdFieldStructure, None, isSubtypeTable, joinOnFind)
+      TableDescRegular(TableName(tableName),
+                                 idFieldStructure,
+                                 nonIdFieldStructure,
+                                 None,
+                                 isSubtypeTable,
+                                 isSubtypeTable || joinOnFind)
     }
   }
 
@@ -646,7 +653,7 @@ object RepoOps {
                              additionalColumns,
                              Some(ReferencesConstraint(idColumn.columnName, baseTableName, idFieldName)),
                              true,
-                             joinOnFind)
+                             true)
           case other =>
             val errorMessage =
               s"Subtype ${subType.typeName.short} of sealed trait ${ctx.typeName.short} was expected to generate TableDescRegular, but was $other"
@@ -656,18 +663,109 @@ object RepoOps {
       }
       val idColDataType = SqlUtils.narrowToAutoIncrementIfPossible(subTypeDesciptions.head.idColumn.idValueDesc.idType)
       val idCol         = IdColumn(idFieldName, IdValueDesc(idColDataType))
-      val colName       = ColumnName(s"${ctx.typeName.short}_type")
+      val colName       = ColumnName(s"${ctx.typeName.short.toLowerCase}_type")
       val subTypeCol    = RegularColumn(colName, RegularLeaf(Text, baseTableName, colName))
-
       TableDescSumType(baseTableName, idCol, subTypeCol, subTypeDesciptions, joinOnFind)
     }
 
     override def findByIdJoin(id: String, tableDescription: EntityDesc)(
       implicit con: Connection
-    ): IO[FindResult[T]] = ???
-  }
+    ): IO[FindResult[T]] = {
+      val tableDesc = tableDescription match {
+        case t: TableDescSumType => t
+        case _                   => throw new RuntimeException("ms")
+      }
 
-  implicit def gen[T]: RepoOps[T] = macro Magnolia.gen[T]
+      val tableName   = tableDesc.tableName.name
+      val idFieldName = tableDesc.idColumn.columnName.name
+
+      if (tableDesc.joinOnFind) {
+        val subtypes = ctx.subtypes.toList.traverse { subType =>
+          val desc = SqlUtils.entityDescForSubtype(subType, tableDesc, ctx)
+          for {
+            subTypeProg <- subType.typeclass.findByIdJoin(id, desc)
+          } yield {
+
+            def create2(resultSet: ResultSet) =
+              subTypeProg match {
+                case Value(value)       => value
+                case JoinResult(finder) => finder.apply(resultSet)
+              }
+            subType -> create2 _
+          }
+        }
+
+        for {
+          subTypeProgs <- subtypes
+        } yield {
+          def findWinner()(resultSet: ResultSet) = {
+            val tableNameOfThing = resultSet.getString(tableDesc.subtypeTableNameCol.columnName.name)
+            val winner = subTypeProgs.find {
+              case (subType, prog) =>
+                val tableName = SqlUtils.findTableName(subType)
+                tableName.contentEquals(tableNameOfThing)
+            }
+            winner.flatMap {
+              case (subtype, prog) => Try(Some(prog.apply(resultSet).get.asInstanceOf[T])).getOrElse(None)
+            }
+          }
+
+          JoinResult(findWinner())
+        }
+      } else {
+        //Plan:  Create massive join and let subprograms create params
+        val joinDescriptions = SqlUtils.getJoinList(tableDesc, None, None).map { joinDesc =>
+          s"left join ${joinDesc.bTable.name} as ${joinDesc.bTable.name} on ${joinDesc.aTable.name}.${joinDesc.aColumn.name} = ${joinDesc.bTable.name}.${joinDesc.bColumn.name}"
+        }
+
+
+        val fullColList = SqlUtils.getCompleteColumnList(tableDesc).map {
+          case (tableName, colName) => s"${tableName.name}.${colName.name} as ${tableName.name}${colName.name}"
+        }
+
+        // Massive join
+        val sql = s"select ${fullColList.mkString(",")} from ${tableName} as ${tableName} ${joinDescriptions
+          .mkString(" ")} where ${tableName}.${idFieldName} = '$id'"
+
+        println(sql)
+
+        for {
+          stmt      <- IO { con.createStatement() }
+          resultSet <- IO { stmt.executeQuery(sql) }
+          subTypeProgs <- ctx.subtypes.toList.traverse { subType =>
+                           val desc = SqlUtils.entityDescForSubtype(subType, tableDesc, ctx)
+                           for {
+                             subTypeProg <- subType.typeclass.findByIdJoin(id, desc)
+                           } yield {
+
+                             def create2(resultSet: ResultSet) =
+                               subTypeProg match {
+                                 case Value(value)       => value
+                                 case JoinResult(finder) => finder.apply(resultSet)
+                               }
+                             subType -> create2 _
+                           }
+                         }
+          _ = resultSet.next()
+        } yield {
+          def findWinner()(resultSet: ResultSet) = {
+            val deciderCol = s"${tableDesc.tableName.name}${tableDesc.subtypeTableNameCol.columnName.name}"
+            val tableNameOfThing = resultSet.getString(deciderCol)
+            val winner = subTypeProgs.find {
+              case (subType, prog) =>
+                val tableName = SqlUtils.findTableName(subType)
+                tableName.equalsIgnoreCase(tableNameOfThing)
+            }
+            winner.flatMap { case (subtype, prog) =>
+              Try(Some(prog.apply(resultSet).get.asInstanceOf[T])).getOrElse(None)
+            }
+          }
+
+          Value(findWinner()(resultSet))
+        }
+      }
+    }
+  }
 
   implicit val intUpdater: RepoOps[Int] = new RepoOps[Int] {
     override def findById(id: String, tableDescription: EntityDesc)(implicit
@@ -749,7 +847,6 @@ object RepoOps {
     override def findById(id: String, tableDescription: EntityDesc)(implicit
                                                                     xa: Transactor[IO],
                                                                     logHandler: LogHandler): IO[Option[JUUID]] = {
-      println(id)
       IO(Some(JUUID.fromString(id)))
     }
 
@@ -984,8 +1081,11 @@ object RepoOps {
 
     override def findByIdJoin(id: String, tableDescription: EntityDesc)(
       implicit con: Connection
-    ): IO[FindResult[List[A]]] = ???
+    ): IO[FindResult[List[A]]] =
+      IO(Value(None))
   }
+
+  implicit def gen[T]: RepoOps[T] = macro Magnolia.gen[T]
 
   def toRepo[A, B](repoOps: RepoOps[B])(implicit
                                         transactor: Transactor[IO],
@@ -1027,17 +1127,14 @@ object Example extends App {
     _             <- personRepo.createTables()
     id            <- personRepo.insert(exampleFriend)
     id2           <- personRepo.insert(exampleStranger)
-    start              = System.nanoTime() nanos;
+    start         = System.nanoTime() nanos;
     foundFriend   <- personRepo.findById(id)
     foundStranger <- personRepo.findById(id2)
-    end                = System.nanoTime() nanos;
-    _ = println(s"time: ${(end-start).toMillis}")
+    end           = System.nanoTime() nanos;
+    _             = println(s"time: ${(end - start).toMillis}")
   } yield (foundFriend, foundStranger)
 
-
   val (friend, stranger) = prog.unsafeRunSync()
-
-
 
   println(friend)
   println(stranger)
@@ -1045,9 +1142,9 @@ object Example extends App {
 }
 
 object JoinExample extends IOApp {
-  trait User
-  case class Admin(@id id: JUUID, identity: Identity) extends User
-  case class RegularUser(@id id: JUUID, visits: Int)  extends User
+  sealed trait UserType
+  case class Admin(@id id: JUUID, identity: Identity) extends UserType
+  case class RegularUser(@id id: JUUID, visits: Int)  extends UserType
 
   case class Identity(@id id: JUUID, name: String, age: Int, address: Address)
   case class Address(@id id: JUUID, street: String, number: Int, groundFloor: Boolean = true)
@@ -1076,22 +1173,28 @@ object JoinExample extends IOApp {
       Identity(java.util.UUID.randomUUID(), "Wooo", 1, Address(java.util.UUID.randomUUID(), "Nursing home", 0, false))
     )
 
+    val exampleUser3 = RegularUser(java.util.UUID.randomUUID(), 1337)
+
     for {
       connection <- IO { datasource.getConnection }
-      userRepo   = RepoOps.toRepo2[JUUID, Admin](RepoOps.gen[Admin])(connection)
+      userRepo   = RepoOps.toRepo2[JUUID, UserType](RepoOps.gen[UserType])(connection)
       _          <- userRepo.createTables()
 
-      id1        <- userRepo.insert(exampleUser1)
-      id2        <- userRepo.insert(exampleUser2)
-      start      = System.nanoTime() nanos;
-      found1     <- userRepo.findById(id1)
-      found2     <- userRepo.findById(id2)
-      end        = System.nanoTime() nanos;
+      id1    <- userRepo.insert(exampleUser1)
+      id2    <- userRepo.insert(exampleUser2)
+      id3    <- userRepo.insert(exampleUser3)
+      start  = System.nanoTime() nanos;
+      found1 <- userRepo.findById(id1)
+      found2 <- userRepo.findById(id2)
+      found3 <- userRepo.findById(id3)
+      end    = System.nanoTime() nanos;
       _ <- IO {
             println(found1)
-            println(Some(exampleUser1))
+            println(exampleUser1)
             println(found2)
-            println(Some(exampleUser2))
+            println(exampleUser2)
+            println(found3)
+            println(exampleUser3)
             println(s"time: ${(end - start).toMillis}")
           }
     } yield ExitCode.Success
