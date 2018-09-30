@@ -58,7 +58,9 @@ lazy val commonDeps = Seq(
     "com.propensive" %% "magnolia" % "0.10.0",
     "ru.yandex.qatools.embed" % "postgresql-embedded" % "2.6",
     "com.github.scalaprops" %% "scalaprops-shapeless" % "0.2.2",
-    "com.danielasfregola" %% "random-data-generator-magnolia" % "2.5"
+    "com.danielasfregola" %% "random-data-generator-magnolia" % "2.5",
+    "com.zaxxer" % "HikariCP" % "3.2.0",
+    "co.fs2" %% "fs2-core" % "0.10.4"
 
   )
 )
