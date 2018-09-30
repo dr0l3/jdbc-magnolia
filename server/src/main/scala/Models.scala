@@ -1,3 +1,4 @@
+import java.sql.ResultSet
 sealed trait DataType
 case object Float extends DataType
 case object Text  extends DataType
@@ -34,9 +35,23 @@ case class TableDescRegular(tableName: TableName,
                             idColumn: IdColumn,
                             additionalColumns: Seq[RegularColumn],
                             referencesConstraint: Option[ReferencesConstraint],
-                            isSubtypeTable: Boolean)
+                            isSubtypeTable: Boolean,
+                            joinOnFind: Boolean)
     extends EntityDesc
-case class TableDescSumType(tableName: TableName, idColumn: IdColumn, subtypeTableNameCol: RegularColumn, subType: Seq[TableDescRegular]) extends EntityDesc
-case class TableDescSeqType(tableName: TableName, idColumn: IdColumn, entityDesc: EntityDesc)         extends EntityDesc
-case class IdLeaf(idValueDesc: IdValueDesc)                                                           extends EntityDesc
-case class RegularLeaf(dataType: DataType)                                                            extends EntityDesc
+case class TableDescSumType(tableName: TableName,
+                            idColumn: IdColumn,
+                            subtypeTableNameCol: RegularColumn,
+                            subType: Seq[TableDescRegular],
+                            joinOnFind: Boolean)
+    extends EntityDesc
+case class TableDescSeqType(tableName: TableName, idColumn: IdColumn, entityDesc: EntityDesc)
+    extends EntityDesc
+case class IdLeaf(idValueDesc: IdValueDesc, tableName: TableName, columnName: ColumnName) extends EntityDesc
+case class RegularLeaf(dataType: DataType, tableName: TableName, columnName: ColumnName)  extends EntityDesc
+
+
+sealed trait FindResult[A]
+case class Value[A](value: Option[A]) extends FindResult[A]
+case class JoinResult[A](finder: ResultSet => Option[A]) extends FindResult[A]
+
+case class JoinDescription(aTable: TableName, aColumn: ColumnName, bTable: TableName, bColumn: ColumnName)
