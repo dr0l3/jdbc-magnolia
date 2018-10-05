@@ -21,7 +21,7 @@ object Shared {
   implicit val (url, xa) = PostgresStuff.go()
   implicit val arbString = Arbitrary[String](Gen.alphaStr)
   implicit val uuidArb = Arbitrary[JUUID](Gen.delay(java.util.UUID.randomUUID()))
-  implicit val logHandler = LogHandler.nop
+  implicit val logHandler = LogHandler.jdkLogHandler
 
   implicit val idTransformer = new IdTransformer[Int] {
     override def fromString(str: String): Int = str.toInt

@@ -1,34 +1,25 @@
-import java.lang
-import java.sql.{ Connection, ResultSet }
-import java.util.UUID
+import java.sql.{Connection, ResultSet}
 
-import SqlAnnotations.{ fieldName, id, tableName }
-import cats.effect.{ Effect, IO }
-import doobie.{ Fragment, LogHandler, Transactor }
-import magnolia.{ CaseClass, Magnolia, SealedTrait }
-import cats.Traverse
+import SqlAnnotations.{fieldName, id, tableName}
 import cats.effect.IO
-import doobie.{ Fragment, LogHandler, Transactor }
-import magnolia.{ CaseClass, Magnolia, SealedTrait }
+import magnolia.{CaseClass, Magnolia, SealedTrait}
 import cats.effect.IO
-import doobie.{ Fragment, LogHandler, Transactor }
+import doobie.{Fragment, LogHandler, Transactor}
 import magnolia._
 import cats._
 import cats.data._
 import cats.effect._
 import cats.implicits._
-import com.danielasfregola.randomdatagenerator.magnolia.RandomDataGenerator._
 import doobie._
 import doobie.implicits._
 import doobie.util.transactor
-import org.scalacheck.Arbitrary
-import scalaprops.Gen
-import scalaprops.Shapeless._
-import java.util.{ UUID => JUUID }
+import java.util.{UUID => JUUID}
 
 import SqlUtils._
-import com.zaxxer.hikari.{ HikariConfig, HikariDataSource }
+import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 
+import scala.concurrent.ExecutionContext
+import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
 import scala.util.Try
 trait Repo[A, B] {
@@ -120,6 +111,11 @@ trait RepoOps[A] {
 object RepoOps {
   type Typeclass[T] = RepoOps[T]
 
+  // context shift
+  implicit val cshift = cats.effect.IO.contextShift(ExecutionContext.global)
+  // timer
+  implicit val timer = cats.effect.IO.timer(ExecutionContext.global)
+
   def combine[T](ctx: CaseClass[Typeclass, T]): RepoOps[T] = new RepoOps[T] {
     override def findByIdJoin(id: String, tableDescription: EntityDesc)(implicit con: Connection): IO[FindResult[T]] = {
       val tableName   = SqlUtils.findTableName(ctx)
@@ -142,7 +138,7 @@ object RepoOps {
 
         val sorted = paramsWithProgs.sortBy(_._1.index)
 
-        val downStreamProgs = sorted.toList.traverse {
+        val downStreamProgs = sorted.toList.parTraverse {
           case (param, findResIO) =>
             for {
               findRes <- findResIO
@@ -186,7 +182,7 @@ object RepoOps {
         for {
           stmt      <- IO { con.createStatement() }
           resultSet <- IO { stmt.executeQuery(sql) }
-          subProgs <- ctx.parameters.toList.traverse { param =>
+          subProgs <- ctx.parameters.toList.parTraverse { param =>
                        val (_, desc) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
                        param.typeclass.findByIdJoin(id, desc)
                      }
@@ -220,7 +216,7 @@ object RepoOps {
           case TableDescSeqType(_, _, _) => true
           case _                         => false
         }
-      }.traverse { param =>
+      }.parTraverse { param =>
         val (_, descForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
         param.typeclass.findById(id, descForParam).map(res => param.index -> res)
       }
@@ -345,7 +341,7 @@ object RepoOps {
         }
 
       val labels = idLable ++ paramsToInsert.map { case (param, _) => SqlUtils.findFieldName(param) }
-      val values: IO[List[Either[String, String]]] = paramsToInsert.toList.traverse {
+      val values: IO[List[Either[String, String]]] = paramsToInsert.toList.parTraverse {
         case (param, tDesc) => param.typeclass.save(param.dereference(value), tDesc)
       }
 
@@ -372,7 +368,7 @@ object RepoOps {
                      .updateWithLogHandler(logHandler)
                      .withUniqueGeneratedKeys[String](SqlUtils.findFieldName(idField))
                      .transact(xa)
-        _ <- seqParams.toList.traverse {
+        _ <- seqParams.toList.parTraverse {
               case (oaram, paramDesc) => oaram.typeclass.save(oaram.dereference(value), paramDesc, Some(response))
             }
       } yield Right(response)
@@ -516,7 +512,7 @@ object RepoOps {
         case t: TableDescSumType => t
         case _                   => throw new RuntimeException("ms")
       }
-      val subTypeProgs = ctx.subtypes.toList.traverse { subType =>
+      val subTypeProgs = ctx.subtypes.toList.parTraverse { subType =>
         val subTable = SqlUtils.entityDescForSubtype(subType, tableDesc, ctx)
         subType.typeclass
           .findById(id, subTable)
@@ -555,21 +551,33 @@ object RepoOps {
         ).isSuccess
       }.map(_.typeName.short)
         .getOrElse(throw new RuntimeException(s"Unable to figure subtype $value of type ${ctx.typeName.short}"))
+      val generatedId = java.util.UUID.randomUUID().toString // TODO: Fix
       val sql =
         if (isAutofillId)
           s"insert into $baseTableName (${colName.name}, $subtypeColName) values (DEFAULT, '$subTypeString')"
         else {
-          val generatedId = java.util.UUID.randomUUID().toString // TODO: Fix
+
           s"insert into $baseTableName (${colName.name}, $subtypeColName) values ('$generatedId', '$subTypeString')"
         }
 
       println(sql)
 
-      val insertProg = Fragment
-        .const(sql)
-        .updateWithLogHandler(logHandler)
-        .withUniqueGeneratedKeys[String](colName.name)
-        .transact(xa)
+      val insertProg = if(isAutofillId) {
+        val a = Fragment
+          .const(sql)
+          .updateWithLogHandler(logHandler)
+          .withUniqueGeneratedKeys[String](colName.name)
+          .transact(xa)
+        a
+      } else {
+        val b =Fragment
+          .const(sql)
+          .updateWithLogHandler(logHandler)
+          .run
+          .transact(xa)
+            .map(_ => generatedId)
+        b
+      }
 
       for {
         id <- insertProg
@@ -680,7 +688,7 @@ object RepoOps {
       val idFieldName = tableDesc.idColumn.columnName.name
 
       if (tableDesc.joinOnFind) {
-        val subtypes = ctx.subtypes.toList.traverse { subType =>
+        val subtypes = ctx.subtypes.toList.parTraverse { subType =>
           val desc = SqlUtils.entityDescForSubtype(subType, tableDesc, ctx)
           for {
             subTypeProg <- subType.typeclass.findByIdJoin(id, desc)
@@ -732,7 +740,7 @@ object RepoOps {
         for {
           stmt      <- IO { con.createStatement() }
           resultSet <- IO { stmt.executeQuery(sql) }
-          subTypeProgs <- ctx.subtypes.toList.traverse { subType =>
+          subTypeProgs <- ctx.subtypes.toList.parTraverse { subType =>
                            val desc = SqlUtils.entityDescForSubtype(subType, tableDesc, ctx)
                            for {
                              subTypeProg <- subType.typeclass.findByIdJoin(id, desc)
@@ -1035,14 +1043,14 @@ object RepoOps {
       }
       val upstreamColName = desc.idColumn.columnName.name
       for {
-        upstreamResults <- value.traverse(v => ops.save(v, desc.entityDesc, None))
+        upstreamResults <- value.parTraverse(v => ops.save(v, desc.entityDesc, None))
         omg             = upstreamResults.map(_.right.get)
         progs = omg.map { res =>
           val sql = s"""insert into $tableName ($upstreamColName, $downstreamColName) values ('$id', '$res')"""
           println(sql)
           Fragment.const(sql)
         }
-        meh <- progs.traverse(prog => prog.updateWithLogHandler(logHandler).run.transact(xa))
+        meh <- progs.parTraverse(prog => prog.updateWithLogHandler(logHandler).run.transact(xa))
       } yield Right(meh.headOption.map(_.toString).getOrElse(java.util.UUID.randomUUID().toString))
 
     }
@@ -1075,7 +1083,7 @@ object RepoOps {
 
       for {
         ids <- fragment.transact(xa)
-        res <- ids.traverse(id => ops.findById(id, desc.entityDesc))
+        res <- ids.parTraverse(id => ops.findById(id, desc.entityDesc))
       } yield res.sequence
     }
 
