@@ -20,8 +20,8 @@ object SimpleExample extends IOApp {
     )
     config.setJdbcUrl(url)
     val datasource = new HikariDataSource(config)
-    val create     = s"create table if not exists hello_world (id uuid primary key, age INTEGER, name TEXT)"
-    val insertSimple = "insert into hello_world (id, name, age) values (?, ?, ?)"
+    val create     = s"create table if not exists hello_world (id UUID primary key, age INTEGER, name TEXT)"
+    val insertSimple = "insert into hello_world (id, name, age) values (?::uuid, ?, ?)"
     val select = s"select id,name,age from hello_world"
 
     val examples2 = (1 to 10000)
@@ -40,7 +40,8 @@ object SimpleExample extends IOApp {
       connection <- IO { datasource.getConnection }
       pStmt      <- IO { connection.prepareStatement(sql) }
       meh        <- IO { connection.createStatement() }
-      _          <- IO { meh.execute(create) }
+      list          <- IO { meh.execute(create, Statement.RETURN_GENERATED_KEYS) }
+      _ <- IO (println(s"list$list"))
       resultSet  <- IO { pStmt.executeQuery() }
       metadata <- IO {
                    resultSet.getMetaData
@@ -55,16 +56,19 @@ object SimpleExample extends IOApp {
       }
       zomg <- IO {
         examples2.foreach { case (id, name, age) =>
-          stm2.setObject(1, id)
+          stm2.setObject(1, id.toString)
           stm2.setObject(2, name.mkString)
           stm2.setObject(3, age)
           stm2.addBatch()
         }
         stm2.executeBatch()
+        stm2.getGeneratedKeys
+
       }
+      omgz <- extractFieldsImperative(List("id"),zomg)
       end2 = System.nanoTime() nanos;
       _ <- IO{
-        println(zomg.toList)
+        println(omgz.flatten)
         println(s"Handlingtime: ${(end2-start2).toMillis}")
       }
       start3 = System.nanoTime() nanos;
@@ -75,7 +79,7 @@ object SimpleExample extends IOApp {
       result <- extractFieldsImperative(List("id", "name", "age"), omfgResult)
       end3 = System.nanoTime() nanos;
       _ <- IO {
-        println(s"Size of resuls: ${result.size}")
+        println(s"Size of resuls: ${result.size}. First: ${result.take(10)}. Last ${result.takeRight(10)}")
         println(s"fetch handling time: ${(end3- start3).toMillis}")
       }
       simpleSelect <- IO {connection.createStatement().executeQuery(s"select * from hello_world where id = '${examples2(5000)._1.toString}'")}

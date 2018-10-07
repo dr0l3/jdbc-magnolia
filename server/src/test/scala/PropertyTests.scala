@@ -1,7 +1,7 @@
 import java.util.UUID
 
-import Shared.{idTransformerString, xa}
-import SqlAnnotations.{fieldName, id, tableName}
+import Shared.{ idTransformerString, xa }
+import SqlAnnotations.{ fieldName, id, tableName }
 import Tests.property
 import org.scalacheck.Properties
 import cats._
@@ -15,13 +15,22 @@ import ru.yandex.qatools.embed.postgresql.EmbeddedPostgres._
 import org.scalacheck.Prop.forAll
 import scalacheckmagnolia.MagnoliaArbitrary._
 import org.scalacheck._
-import java.util.{UUID => JUUID}
+import java.util.{ UUID => JUUID }
+import scala.concurrent.duration._
+
+import com.zaxxer.hikari.{ HikariConfig, HikariDataSource }
 
 object Shared {
-  implicit val (url, xa) = PostgresStuff.go()
-  implicit val arbString = Arbitrary[String](Gen.alphaStr)
-  implicit val uuidArb = Arbitrary[JUUID](Gen.delay(java.util.UUID.randomUUID()))
+  implicit val (url, xa)  = PostgresStuff.go()
+  implicit val arbString  = Arbitrary[String](Gen.alphaStr)
+  implicit val uuidArb    = Arbitrary[JUUID](Gen.delay(java.util.UUID.randomUUID()))
   implicit val logHandler = LogHandler.jdkLogHandler
+  val config = new HikariConfig(
+    "/home/drole/projects/magnolia-testing/server/src/main/resources/application.properties"
+  )
+  config.setJdbcUrl(url)
+  val datasource = new HikariDataSource(config)
+  val con        = datasource.getConnection
 
   implicit val idTransformer = new IdTransformer[Int] {
     override def fromString(str: String): Int = str.toInt
@@ -32,9 +41,8 @@ object Shared {
   }
 
   implicit val idTransformerUUID = new IdTransformer[JUUID] {
-    override def fromString(str: String): JUUID = {
+    override def fromString(str: String): JUUID =
       JUUID.fromString(str)
-    }
   }
 }
 
@@ -43,7 +51,9 @@ object Tests extends Properties("RepoProps") {
 
   case class SimpleCaseClassExample(@id id: JUUID, string: String, double: Double, anotherInt: Int, bool: Boolean)
 
-  val caseClassRepo = RepoOps.toRepo(RepoOps.gen[SimpleCaseClassExample])(transactor = xa, idTransformer = idTransformerUUID, logHandler = logHandler)
+  val caseClassRepo = RepoOps.toRepo2(RepoOps.gen[SimpleCaseClassExample])(con)(transactor = xa,
+                                                                                idTransformer = idTransformerUUID,
+                                                                                logHandler = logHandler)
 
   implicit val arb = implicitly[Arbitrary[SimpleCaseClassExample]]
 
@@ -60,7 +70,6 @@ object Tests extends Properties("RepoProps") {
     prog.unsafeRunSync()
   }
 
-
 }
 
 object TraitTest extends Properties("Repo.trait") {
@@ -69,7 +78,9 @@ object TraitTest extends Properties("Repo.trait") {
   case class FirstImplementation(@id id: JUUID, string: String, double: Double) extends Trait
   case class SecondImplementation(@id id: JUUID, int: Int, double: Double)      extends Trait
 
-  val traitRepo = RepoOps.toRepo(RepoOps.gen[Trait])(transactor = xa, idTransformer = idTransformerUUID, logHandler = logHandler)
+  val traitRepo = RepoOps.toRepo2(RepoOps.gen[Trait])(con)(transactor = xa,
+                                                           idTransformer = idTransformerUUID,
+                                                           logHandler = logHandler)
 
   implicit val arbTrait = implicitly[Arbitrary[Trait]]
 
@@ -102,7 +113,9 @@ object ComplexTests extends Properties("Repo.complex") {
   case class E(@id string: JUUID, age: Int, height: Double) extends C
 
   implicit val arbComplex = implicitly[Arbitrary[ComplexExample]]
-  val complexRepo         = RepoOps.toRepo(RepoOps.gen[ComplexExample])(transactor = xa, idTransformer = idTransformerUUID, logHandler = logHandler)
+  val complexRepo = RepoOps.toRepo2(RepoOps.gen[ComplexExample])(con)(transactor = xa,
+                                                                      idTransformer = idTransformerUUID,
+                                                                      logHandler = logHandler)
 
   property("Can insert and find complex example") = forAll { complex: ComplexExample =>
     val prog = for {
@@ -120,24 +133,19 @@ object ListTest extends Properties("Repo.list") {
   case class Lists(@id id: JUUID, string: String, list: List[String], list2: List[SomeCaseClass])
   case class SomeCaseClass(@id string: JUUID, anotherString: String)
   implicit val listsArb = implicitly[Arbitrary[Lists]]
-  val listsRepo         = RepoOps.toRepo(RepoOps.gen[Lists])(transactor = xa, idTransformer = idTransformerUUID, logHandler = logHandler)
+  val listsRepo = RepoOps.toRepo2(RepoOps.gen[Lists])(con)(transactor = xa,
+                                                           idTransformer = idTransformerUUID,
+                                                           logHandler = logHandler)
 
   property("can insert find lists") = forAll { l: Lists =>
     val prog = for {
       _     <- listsRepo.createTables()
       id    <- listsRepo.insert(l)
       found <- listsRepo.findById(id)
-      res <- Fragment.const(
-        s"""
-           |SELECT schemaname,relname,n_live_tup
-           |  FROM pg_stat_user_tables
-           |  ORDER BY n_live_tup DESC;
-       """.stripMargin).query[(String, String, Int)].to[List].transact(xa)
-      _ = println(res)
     } yield {
       found.isDefined &&
-        found.get.list.size == l.list.size &&
-        found.get.list2.size == l.list2.size
+      found.get.list.size == l.list.size &&
+      found.get.list2.size == l.list2.size
     }
 
     prog.unsafeRunSync()
@@ -147,15 +155,18 @@ object ListTest extends Properties("Repo.list") {
 object AnnotationTests extends Properties("Repo.annotation") {
   import Shared._
 
-  @tableName("random_table") case class WithAnnotations(@id @fieldName("random_name") id: JUUID, @fieldName("another") str: String)
+  @tableName("random_table") case class WithAnnotations(@id @fieldName("random_name") id: JUUID,
+                                                        @fieldName("another") str: String)
   implicit val annotArb = implicitly[Arbitrary[WithAnnotations]]
 
-  val annoRepo = RepoOps.toRepo(RepoOps.gen[WithAnnotations])(transactor = xa, idTransformer = idTransformerUUID, logHandler = logHandler)
+  val annoRepo = RepoOps.toRepo2(RepoOps.gen[WithAnnotations])(con)(transactor = xa,
+                                                                    idTransformer = idTransformerUUID,
+                                                                    logHandler = logHandler)
 
   property("Can insert and find things with annotations") = forAll { a: WithAnnotations =>
     val prog = for {
-      _ <- annoRepo.createTables()
-      id <- annoRepo.insert(a)
+      _     <- annoRepo.createTables()
+      id    <- annoRepo.insert(a)
       found <- annoRepo.findById(id)
     } yield found.isDefined
 

@@ -1,15 +1,20 @@
 import java.sql.ResultSet
+
+import cats.effect.IO
 sealed trait DataType
 case object Float extends DataType
 case object Text  extends DataType
 case object Bool  extends DataType
 
 sealed trait IdType          extends DataType
-case object Serial           extends IdType
-case object BigSerial        extends IdType
-case object Integer          extends IdType
-case class Character(n: Int) extends IdType // Must specify size of ids
-case object UUID             extends IdType
+object IdType {
+  case object Serial           extends IdType
+  case object BigSerial        extends IdType
+  case object Integer          extends IdType
+  case class Character(n: Int) extends IdType // Must specify size of ids
+  case object UUID             extends IdType
+}
+
 
 case class TableName(name: String)  extends AnyVal
 case class ColumnName(name: String) extends AnyVal
@@ -57,5 +62,11 @@ case class JoinResult[A](finder: ResultSet => Option[A]) extends FindResult[A]
 sealed trait JoinType
 case object InnerJoin extends JoinType
 case object LeftJoin extends JoinType
+case object RightJoin extends JoinType
 
 case class JoinDescription(aTable: TableName, aColumn: ColumnName, bTable: TableName, bColumn: ColumnName, joinType: JoinType)
+
+sealed trait InsertResult[A]
+case class Simple[A](value: String) extends InsertResult[A]
+case class Insert[A](idValue: String) extends InsertResult[A]
+case class InsertProg[A](prog: String => IO[String]) extends InsertResult[A]

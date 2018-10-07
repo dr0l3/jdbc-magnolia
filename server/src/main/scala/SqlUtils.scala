@@ -17,6 +17,7 @@ import scala.annotation.Annotation
 import scala.language.experimental.macros
 import java.nio.file.Paths
 import java.sql.ResultSet
+import IdType._
 
 import cats.effect.IO
 import doobie.{LogHandler, Transactor}
@@ -196,14 +197,20 @@ object SqlUtils {
     }
   }
 
-  def getJoinList(description: EntityDesc, upstreamTableName: Option[TableName], upstreamColName: Option[ColumnName]): List[JoinDescription] = {
+  def getJoinList(description: EntityDesc, upstreamTableName: Option[TableName], upstreamColName: Option[ColumnName], stopAtSeq: Boolean = true): List[JoinDescription] = {
     description match {
       case TableDescRegular(tableName, idColumn, additionalColumns, referencesConstraint, isSubtypeTable, joinOnFind) =>
-        val ds = additionalColumns.flatMap(col => getJoinList(col.regularValue, Some(tableName), Some(col.columnName)))
+        val ds = additionalColumns.flatMap(col => col.regularValue match {
+          case TableDescRegular(_, _, _, _, _, _) => getJoinList(col.regularValue, Some(tableName), Some(col.columnName))
+          case TableDescSumType(_, _, _, _, _) => getJoinList(col.regularValue, Some(tableName), Some(col.columnName))
+          case TableDescSeqType(_, _, _) => getJoinList(col.regularValue, Some(tableName), Some(idColumn.columnName))
+          case IdLeaf(_, _, _)           => getJoinList(col.regularValue, Some(tableName), Some(col.columnName))
+          case RegularLeaf(_, _, _)      => getJoinList(col.regularValue, Some(tableName), Some(col.columnName))
+        })
         val fromThis = for {
           ust <- upstreamTableName
           usc <- upstreamColName
-        } yield JoinDescription(ust, usc, tableName, idColumn.columnName, InnerJoin)
+        } yield JoinDescription(ust, usc, tableName, idColumn.columnName, LeftJoin)
 
         List(fromThis).flatten ++ ds
       case TableDescSumType(tableName, idColumn, subtypeTableNameCol, subType, joinOnFind) =>
@@ -211,16 +218,29 @@ object SqlUtils {
         val fromThis = for {
           ust <- upstreamTableName
           usc <- upstreamColName
-        } yield JoinDescription(ust, usc, tableName, idColumn.columnName, InnerJoin)
+        } yield JoinDescription(ust, usc, tableName, idColumn.columnName, LeftJoin)
 
         List(fromThis).flatten ++ ds
       case TableDescSeqType(tableName, idColumn, entityDesc) =>
-        val ds = getJoinList(entityDesc, Some(tableName), Some(idColumn.columnName))
+        val colName = entityDesc match {
+          case TableDescRegular(_, idColumn, _, _, _, _) =>
+            idColumn.columnName
+          case TableDescSumType(_, idColumn, _, _, _) =>
+            idColumn.columnName
+          case TableDescSeqType(_, idColumn, _) =>
+            idColumn.columnName
+          case IdLeaf(_, _, columnName)           =>
+            columnName
+          case RegularLeaf(_, _, columnName)      =>
+            columnName
+        }
+        val ds = getJoinList(entityDesc, Some(tableName), Some(colName))
         val fromThis = for {
         ust <- upstreamTableName
         usc <- upstreamColName
-        } yield JoinDescription(ust, usc, tableName, idColumn.columnName, InnerJoin)
-        List(fromThis).flatten ++ ds
+        } yield JoinDescription(ust, usc, tableName, idColumn.columnName, LeftJoin)
+        if(stopAtSeq) Nil
+        else List(fromThis).flatten ++ ds
       case IdLeaf(idValueDesc, _, _)           =>
         Nil
       case RegularLeaf(dataType, _, _)      =>
@@ -228,10 +248,16 @@ object SqlUtils {
     }
   }
 
-  def getCompleteColumnList(entityDesc: EntityDesc): List[(TableName, ColumnName)] = {
+  def getCompleteColumnList(entityDesc: EntityDesc, stopOnSeq: Boolean = true): List[(TableName, ColumnName)] = {
+    def isSeqCol(entityDesc: EntityDesc) = {
+      entityDesc match {
+        case TableDescSeqType(_, _, _) => true
+        case _ => false
+      }
+    }
     entityDesc match {
       case TableDescRegular(tableName, idColumn, additionalColumns, _, _, _) =>
-        val colNames = idColumn.columnName :: additionalColumns.toList.map(_.columnName)
+        val colNames = idColumn.columnName :: additionalColumns.filterNot(col => isSeqCol(col.regularValue)).toList.map(_.columnName)
         val fromThis = colNames.map(tableName -> _)
         val downStream = additionalColumns.flatMap(col => getCompleteColumnList(col.regularValue))
         fromThis ++ downStream
@@ -240,13 +266,15 @@ object SqlUtils {
         val downStream = subType.toList.flatMap(getCompleteColumnList(_))
         fromThis ++ downStream
       case TableDescSeqType(tableName, idColumn, entityDesc) =>
-        val fromThis = tableName -> idColumn.columnName
-        val downStream = getCompleteColumnList(entityDesc)
-        fromThis :: downStream
+//        val fromThis = tableName -> idColumn.columnName
+        val downStream = getCompleteColumnList(entityDesc, stopOnSeq)
+        if(stopOnSeq) Nil
+        else downStream
       case IdLeaf(_, _, _)           =>
         Nil
-      case RegularLeaf(_, _, _)      =>
-        Nil
+      case RegularLeaf(_,tableName, col)      =>
+        if(stopOnSeq) Nil
+        else List(tableName -> col)
     }
   }
 
@@ -259,6 +287,12 @@ object SqlUtils {
           s"Entity description for was expected to be of type IdLef or RegularLeft, but was $other"
         throw new RuntimeException(errorMessage)
     }
+  }
+
+  def joinTypeToStirng(joinType: JoinType) = joinType match {
+    case InnerJoin => "inner join"
+    case LeftJoin  => "left join"
+    case RightJoin => "right join"
   }
 }
 
