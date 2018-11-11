@@ -35,28 +35,6 @@ trait IdTransformer[A] {
   def fromString(str: String): A
 }
 
-class RepoFromOps[A, B](repoOps: RepoOps[B])(implicit val transactor: Transactor[IO],
-                                             idTransformer: IdTransformer[A],
-                                             logHandler: LogHandler)
-    extends Repo[A, B] {
-  val desc = repoOps.describe(false, false, TableName(""), null, false, ColumnName(""))
-
-  override def createTables(): IO[Unit] =
-    for {
-      _ <- repoOps.createTable(desc)
-    } yield ()
-
-  override def insert(value: B): IO[A] =
-    for {
-      res <- repoOps.save(value, desc, None)
-    } yield {
-      idTransformer.fromString(res.right.get)
-    }
-
-  override def findById(id: A): IO[Option[B]] =
-    repoOps.findById(id.toString, desc)
-}
-
 class RepoFromOps2[A, B](repoOps: RepoOps[B])(connection: Connection)(implicit val transactor: Transactor[IO],
                                                                       idTransformer: IdTransformer[A],
                                                                       logHandler: LogHandler)
@@ -94,20 +72,9 @@ class RepoFromOps2[A, B](repoOps: RepoOps[B])(connection: Connection)(implicit v
 }
 
 trait RepoOps[A] {
-  def findById(id: String, tableDescription: EntityDesc)(implicit xa: Transactor[IO],
-                                                         logHandler: LogHandler): IO[Option[A]]
 
   def findByIdJoin(id: String, tableDescription: EntityDesc)(implicit con: Connection): IO[FindResult[A]]
-
   def insert(value: A, tableDescription: EntityDesc)(implicit con: Connection): IO[InsertResult[A]]
-
-//  def insert(value: A, tableDescription: EntityDesc)(implicit con: Connection): IO[Unit]
-
-  def save(value: A, tableDescription: EntityDesc, assignedId: Option[String] = None)(
-    implicit
-    xa: Transactor[IO],
-    logHandler: LogHandler
-  ): IO[Either[String, String]]
   def createTable(tableDescription: EntityDesc)(implicit xa: Transactor[IO],
                                                 logHandler: LogHandler): IO[Either[String, Int]]
   def describe(isId: Boolean,
@@ -361,84 +328,6 @@ object RepoOps {
       }
     }
 
-    override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO],
-                                                                    logHandler: LogHandler): IO[Option[T]] = {
-      val tableName   = SqlUtils.findTableName(ctx)
-      val idField     = SqlUtils.findIdField(ctx)
-      val idFieldName = SqlUtils.findFieldName(idField)
-
-      val tableDesc = tableDescription match {
-        case t: TableDescRegular => t
-        case other =>
-          val errorMessage =
-            s"Tabledescription for type ${ctx.typeName.short} was expected to be of type TableDescRegular, but was $other"
-          throw new RuntimeException(errorMessage)
-      }
-
-      val subListPrograms: IO[List[(Int, Option[Any])]] = ctx.parameters.toList.filter { param =>
-        val (_, descForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
-        descForParam match {
-          case TableDescSeqType(_, _, _) => true
-          case _                         => false
-        }
-      }.parTraverse { param =>
-        val (_, descForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
-        param.typeclass.findById(id, descForParam).map(res => param.index -> res)
-      }
-
-      val fieldNamesForNonSeqs = ctx.parameters.toList.filterNot { param =>
-        val (_, decForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
-        decForParam match {
-          case t: TableDescSeqType => true
-          case _                   => false
-        }
-      }.map { param =>
-        param.index -> SqlUtils.findFieldName(param)
-      }
-
-      val indexesForIds = ctx.parameters.toList.filter { param =>
-        val (_, descForParam) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
-        descForParam match {
-          case _: TableDescRegular => true
-          case _: TableDescSumType => true
-          case _                   => false
-        }
-      }.map { param =>
-        param.index -> param
-      }
-
-      val sqlStatement =
-        s"select ${fieldNamesForNonSeqs.map(_._2).mkString(",")} from $tableName where $idFieldName = '$id'"
-
-      val prog = Fragment.const(sqlStatement).execWith(exec(fieldNamesForNonSeqs.map(_._1)))
-
-      for {
-        listResults    <- subListPrograms
-        nonListResults <- prog.transact(xa)
-        (idProgs, valueProgs) = nonListResults.map {
-          case (sqlResultIndex, obj) =>
-            val param = indexesForIds.find { case (fieldIndex, param) => sqlResultIndex == fieldIndex }
-            (sqlResultIndex, param, obj)
-        }.partition { opt =>
-          opt._2.isDefined
-        }
-        downStreamIdProgs = idProgs.flatMap {
-          case (_, maybeIdParam, obj) =>
-            maybeIdParam.map {
-              case (_, param) =>
-                val (_, desc) = SqlUtils.entityDescForParam(param, tableDesc, ctx)
-                param.typeclass
-                  .findById(obj.toString, desc)
-                  .map(res => param.index -> res)
-            }
-        }
-        idDownstreamResults <- Traverse[List].sequence[IO, (Int, Option[Any])](downStreamIdProgs)
-        valueResults        = valueProgs.map { case (index, _, obj) => (index, Some(obj)) }
-        total               = (idDownstreamResults ++ listResults ++ valueResults).sortBy(_._1)
-      } yield Try(Some(ctx.rawConstruct(total.map(_._2.get)))).getOrElse(None)
-    }
-
     // Read the specified columns from the resultset.
     def readAll(cols: List[(Int, Int)]): ResultSetIO[List[List[(Int, Object)]]] =
       readOne(cols).whileM[List](HRS.next)
@@ -454,100 +343,6 @@ object RepoOps {
         cols = (1 to md.getColumnCount).toList.zip(fieldIndexes)
         data <- HPS.executeQuery(readAll(cols))
       } yield data.flatten
-
-    override def save(value: T, tableDescription: EntityDesc, assignedId: Option[String])(
-      implicit
-      xa: Transactor[IO],
-      logHandler: LogHandler
-    ): IO[Either[String, String]] = {
-      // Three cases
-      // - Subtype table, id is provided
-      // - Regular table with auto fill id, dont insert id
-      // - Regular table without autofil id, insert id
-      // TODO: Cases when idtype is an option
-
-      // Find the tablename
-      val tableName = SqlUtils.findTableName(ctx)
-
-      // Find the id field
-      val idField = SqlUtils.findIdField(ctx)
-
-      val tableDesc = tableDescription match {
-        case t: TableDescRegular => t
-        case other =>
-          val errorMessage =
-            s"TableDescription for type ${ctx.typeName.short} was expected to be of type TableDescRegular, but was $other"
-          throw new RuntimeException(errorMessage)
-      }
-
-      val (pars, (idLable, idValue)) =
-        (tableDesc.isSubtypeTable, assignedId, tableDesc.idColumn.idValueDesc.idType) match {
-          case (true, Some(id), _) =>
-            // Id is provided, dont process the id param
-            (ctx.parameters.filterNot(_ == idField), (Seq(SqlUtils.findFieldName(idField)), Seq(Right(id))))
-          case (true, None, _) =>
-            val errorMessage =
-              s"Tabledescription for type ${ctx.typeName.short} specifies a subtype table, but no id was provided."
-            throw new RuntimeException(errorMessage)
-          case (false, _, idType) if SqlUtils.isAutofillFieldType(idType) =>
-            // Id will be auto filled by database, dont process the id param
-            (ctx.parameters.filterNot(_ == idField), (Seq(), Seq()))
-          case _ =>
-            (ctx.parameters, (Seq(), Seq()))
-        }
-
-      val (paramsToInsert, seqParams) = pars
-        .map(param => SqlUtils.entityDescForParam(param, tableDesc, ctx))
-        .partition {
-          case (_, entityDesc) =>
-            entityDesc match {
-              case _: TableDescSeqType => false
-              case _                   => true
-            }
-        }
-
-      val labels = idLable ++ paramsToInsert.map { case (param, _) => SqlUtils.findFieldName(param) }
-      val values: IO[List[Either[String, String]]] = paramsToInsert.toList.parTraverse {
-        case (param, tDesc) => param.typeclass.save(param.dereference(value), tDesc)
-      }
-
-      for {
-        idValues <- values
-        updates = (idValue ++ idValues)
-          .foldLeft[List[String]](Nil) { (acc, next) =>
-            next match {
-              case Right(v) => v :: acc
-              case Left(v)  => throw new RuntimeException(s"Error while inserting ${value}: $v")
-            }
-          }
-          .reverse
-        columnDefinitions = labels.mkString("(", ", ", ")")
-        valueDefinitions  = updates.map(str => s"'$str'").mkString("(", ", ", ")")
-        update = Fragment.const("""insert into """) ++
-          Fragment.const(tableName) ++
-          Fragment.const(columnDefinitions) ++
-          Fragment.const(" values ") ++
-          Fragment.const(valueDefinitions)
-
-        _ = println(update.toString())
-        response <- if (isAutofillFieldType(tableDesc.idColumn.idValueDesc.idType)) {
-                     update
-                       .updateWithLogHandler(logHandler)
-                       .withUniqueGeneratedKeys[String](SqlUtils.findFieldName(idField))
-                       .transact(xa)
-                   } else {
-                     update
-                       .updateWithLogHandler(logHandler)
-                       .run
-                       .transact(xa)
-                       .map(_ => updates.head)
-                   }
-        _ <- seqParams.toList.parTraverse {
-              case (oaram, paramDesc) => oaram.typeclass.save(oaram.dereference(value), paramDesc, Some(response))
-            }
-      } yield Right(response)
-
-    }
 
     override def createTable(tableDescription: EntityDesc)(implicit
                                                            xa: Transactor[IO],
@@ -739,89 +534,6 @@ object RepoOps {
               }
 
       } yield Insert(ret)
-    }
-
-    override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO],
-                                                                    logHandler: LogHandler): IO[Option[T]] = {
-      val tableDesc = tableDescription match {
-        case t: TableDescSumType => t
-        case _                   => throw new RuntimeException("ms")
-      }
-      val subTypeProgs = ctx.subtypes.toList.parTraverse { subType =>
-        val subTable = SqlUtils.entityDescForSubtype(subType, tableDesc, ctx)
-        subType.typeclass
-          .findById(id, subTable)
-          .map(_.map { stuff =>
-            subType.cast(stuff)
-          })
-      }
-
-      subTypeProgs.map {
-        _.collectFirst {
-          case Some(a) => a.asInstanceOf[T]
-        }
-      }
-    }
-
-    override def save(value: T, tableDescription: EntityDesc, assignedId: Option[String])(
-      implicit
-      xa: Transactor[IO],
-      logHandler: LogHandler
-    ): IO[Either[String, String]] = {
-      // Insert in base table
-      val tableDesc = tableDescription match {
-        case t: TableDescSumType => t
-        case other =>
-          val errorMessage =
-            s"Tabledescription for type ${ctx.typeName.short} was expected to be of type TableDescSumType, but was $other"
-          throw new RuntimeException(errorMessage)
-      }
-      val baseTableName  = tableDesc.tableName.name
-      val isAutofillId   = SqlUtils.isAutofillFieldType(tableDesc.idColumn.idValueDesc.idType)
-      val colName        = tableDesc.idColumn.columnName
-      val subtypeColName = tableDesc.subtypeTableNameCol.columnName.name
-      val subTypeString = ctx.subtypes.find { subType =>
-        Try(
-          subType cast value
-        ).isSuccess
-      }.map(_.typeName.short)
-        .getOrElse(throw new RuntimeException(s"Unable to figure subtype $value of type ${ctx.typeName.short}"))
-      val generatedId = java.util.UUID.randomUUID().toString // TODO: Fix
-      val sql =
-        if (isAutofillId)
-          s"insert into $baseTableName (${colName.name}, $subtypeColName) values (DEFAULT, '$subTypeString')"
-        else {
-
-          s"insert into $baseTableName (${colName.name}, $subtypeColName) values ('$generatedId', '$subTypeString')"
-        }
-
-      println(sql)
-
-      val insertProg = if (isAutofillId) {
-        val a = Fragment
-          .const(sql)
-          .updateWithLogHandler(logHandler)
-          .withUniqueGeneratedKeys[String](colName.name)
-          .transact(xa)
-        a
-      } else {
-        val b = Fragment
-          .const(sql)
-          .updateWithLogHandler(logHandler)
-          .run
-          .transact(xa)
-          .map(_ => generatedId)
-        b
-      }
-
-      for {
-        id <- insertProg
-        resp <- ctx.dispatch(value)(
-                 sub => sub.typeclass.save(sub cast value, SqlUtils.entityDescForSubtype(sub, tableDesc, ctx), Some(id))
-               )
-      } yield resp
-
     }
 
     override def createTable(tableDescription: EntityDesc)(implicit
@@ -1016,18 +728,6 @@ object RepoOps {
       implicit con: Connection
     ): IO[InsertResult[Int]] = IO(Simple(value.toString))
 
-    override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO],
-                                                                    logHandler: LogHandler): IO[Option[Int]] =
-      IO(Some(id.toInt))
-
-    override def save(value: Int, tableDescription: EntityDesc, assignedId: Option[String])(
-      implicit
-      xa: Transactor[IO],
-      logHandler: LogHandler
-    ): IO[Either[String, String]] =
-      IO(Right(value.toString))
-
     override def createTable(tableDescription: EntityDesc)(implicit
                                                            xa: Transactor[IO],
                                                            logHandler: LogHandler): IO[Either[String, Int]] =
@@ -1059,18 +759,6 @@ object RepoOps {
       implicit con: Connection
     ): IO[InsertResult[String]] = IO(Simple(value))
 
-    override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO],
-                                                                    logHandler: LogHandler): IO[Option[String]] =
-      IO(Some(id))
-
-    override def save(value: String, tableDescription: EntityDesc, assignedId: Option[String])(
-      implicit
-      xa: Transactor[IO],
-      logHandler: LogHandler
-    ): IO[Either[String, String]] =
-      IO(Right(value.toString))
-
     override def createTable(tableDescription: EntityDesc)(implicit
                                                            xa: Transactor[IO],
                                                            logHandler: LogHandler): IO[Either[String, Int]] =
@@ -1100,18 +788,6 @@ object RepoOps {
     override def insert(value: JUUID, tableDescription: EntityDesc)(
       implicit con: Connection
     ): IO[InsertResult[JUUID]] = IO(Simple(value.toString))
-
-    override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO],
-                                                                    logHandler: LogHandler): IO[Option[JUUID]] =
-      IO(Some(JUUID.fromString(id)))
-
-    override def save(value: JUUID, tableDescription: EntityDesc, assignedId: Option[String])(
-      implicit
-      xa: Transactor[IO],
-      logHandler: LogHandler
-    ): IO[Either[String, String]] =
-      IO(Right(value.toString))
 
     override def createTable(tableDescription: EntityDesc)(implicit
                                                            xa: Transactor[IO],
@@ -1145,18 +821,6 @@ object RepoOps {
       implicit con: Connection
     ): IO[InsertResult[Double]] = IO(Simple(value.toString))
 
-    override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO],
-                                                                    logHandler: LogHandler): IO[Option[Double]] =
-      IO(Some(id.toDouble))
-
-    override def save(value: Double, tableDescription: EntityDesc, assignedId: Option[String])(
-      implicit
-      xa: Transactor[IO],
-      logHandler: LogHandler
-    ): IO[Either[String, String]] =
-      IO(Right(value.toString))
-
     override def createTable(tableDescription: EntityDesc)(implicit
                                                            xa: Transactor[IO],
                                                            logHandler: LogHandler): IO[Either[String, Int]] =
@@ -1186,16 +850,6 @@ object RepoOps {
       implicit con: Connection
     ): IO[InsertResult[Boolean]] = IO(Simple(value.toString))
 
-    override def findById(id: String, tableDescription: EntityDesc)(
-      implicit xa: transactor.Transactor[IO],
-      logHandler: LogHandler
-    ): IO[Option[Boolean]] =
-      IO(Some(id.contentEquals("t")))
-    override def save(value: Boolean, tableDescription: EntityDesc, assignedId: Option[String])(
-      implicit xa: Transactor[IO],
-      logHandler: LogHandler
-    ): IO[Either[String, String]] =
-      IO(Right(value.toString))
     override def createTable(tableDescription: EntityDesc)(
       implicit xa: Transactor[IO],
       logHandler: LogHandler
@@ -1327,74 +981,6 @@ object RepoOps {
       TableDescSeqType(tableName, parentIdColumn, subType)
     }
 
-    override def save(value: List[A], tableDescription: EntityDesc, assignedId: Option[String])(
-      implicit
-      xa: Transactor[IO],
-      logHandler: LogHandler
-    ): IO[Either[String, String]] = {
-      // decide if this is a value or an object
-      val desc = tableDescription match {
-        case t: TableDescSeqType =>
-          t
-        case other =>
-          val errorMessage = s"Table Description for list was expected to be of type TableDescSeqType, but was $other"
-          throw new RuntimeException(errorMessage)
-      }
-      val id        = assignedId.get
-      val tableName = desc.tableName.name
-      val downstreamColName = desc.entityDesc match {
-        case TableDescRegular(_, idColumn, _, _, _, _) => idColumn.columnName.name
-        case TableDescSumType(_, idColumn, _, _, _)    => idColumn.columnName.name
-        case TableDescSeqType(_, idColumn, _)          => idColumn.columnName.name
-        case IdLeaf(_, _, _)                           => "value"
-        case RegularLeaf(_, _, _)                      => "value"
-      }
-      val upstreamColName = desc.idColumn.columnName.name
-      for {
-        upstreamResults <- value.parTraverse(v => ops.save(v, desc.entityDesc, None))
-        omg             = upstreamResults.map(_.right.get)
-        progs = omg.map { res =>
-          val sql = s"""insert into $tableName ($upstreamColName, $downstreamColName) values ('$id', '$res')"""
-          println(sql)
-          Fragment.const(sql)
-        }
-        meh <- progs.parTraverse(prog => prog.updateWithLogHandler(logHandler).run.transact(xa))
-      } yield Right(meh.headOption.map(_.toString).getOrElse(java.util.UUID.randomUUID().toString))
-
-    }
-
-    override def findById(id: String, tableDescription: EntityDesc)(implicit
-                                                                    xa: Transactor[IO],
-                                                                    logHandler: LogHandler): IO[Option[List[A]]] = {
-      val desc = tableDescription match {
-        case t: TableDescSeqType => t
-        case other =>
-          val errorMessage = s"Entity Desc for list type was expected to be of type TableDescSeqType, but was $other"
-          throw new RuntimeException(errorMessage)
-      }
-
-      val tableName = desc.tableName.name
-      val idColName = desc.idColumn.columnName.name
-      val downstreamColName = desc.entityDesc match {
-        case TableDescRegular(_, idColumn, _, _, _, _) => idColumn.columnName.name
-        case TableDescSumType(_, idColumn, _, _, _)    => idColumn.columnName.name
-        case TableDescSeqType(_, idColumn, _)          => idColumn.columnName.name
-        case IdLeaf(_, _, _)                           => "value"
-        case RegularLeaf(_, _, _)                      => "value"
-      }
-      val sql = s"select $downstreamColName from $tableName where $idColName = '$id'"
-      val fragment =
-        Fragment
-          .const(sql)
-          .queryWithLogHandler[String](logHandler)
-          .to[List]
-
-      for {
-        ids <- fragment.transact(xa)
-        res <- ids.parTraverse(id => ops.findById(id, desc.entityDesc))
-      } yield res.sequence
-    }
-
     override def findByIdJoin(id: String, tableDescription: EntityDesc)(
       implicit con: Connection
     ): IO[FindResult[List[A]]] = {
@@ -1452,12 +1038,6 @@ object RepoOps {
   }
 
   implicit def gen[T]: RepoOps[T] = macro Magnolia.gen[T]
-
-  def toRepo[A, B](repoOps: RepoOps[B])(implicit
-                                        transactor: Transactor[IO],
-                                        idTransformer: IdTransformer[A],
-                                        logHandler: LogHandler): Repo[A, B] =
-    new RepoFromOps(repoOps)
 
   def toRepo2[A, B](repoOps: RepoOps[B])(connection: Connection)(implicit
                                                                  transactor: Transactor[IO],
