@@ -33,13 +33,11 @@ object LetsDoThis extends App {
      *  showing each parameter, and prefixing it with the class name
      */
     def combine[T](ctx: CaseClass[Typeclass, T]): Show[Out, T] = { value =>
-      println(s"COMBINE, $ctx")
       if (ctx.isValueClass) {
         val param = ctx.parameters.head
         param.typeclass.show(param.dereference(value))
       } else {
         val paramStrings = ctx.parameters.map { param =>
-          //          println(s"param: ${param.label}. Annotations: ${param.annotations}")
           val label = param.annotations.collectFirst {
             case showStuff.name(n) => n
           }
@@ -70,7 +68,6 @@ object LetsDoThis extends App {
      * and prefix with the annotations as discovered on the subtype.
      */
     def dispatch[T](ctx: SealedTrait[Typeclass, T]): Show[Out, T] = (value: T) => {
-      println(s"DISPATCH, $ctx")
       ctx.dispatch(value) { sub =>
         val anns          = sub.annotations.filterNot(_.isInstanceOf[scala.SerialVersionUID])
         val annotationStr = if (anns.isEmpty) "" else anns.mkString("[", ",", "]")
@@ -101,7 +98,6 @@ object LetsDoThis extends App {
 
     implicit def list[A](implicit A: Show[String, A]): Show[String, List[A]] =
       (as: List[A]) => {
-        println("LIST")
         as.map(A.show).mkString("[", ",", "]")
       }
   }

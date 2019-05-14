@@ -1,6 +1,8 @@
 import Example.{Friend, Person, Stranger}
+import Loadtest.url
 import SqlAnnotations.{id, tableName}
 import cats.effect.IO
+import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import doobie.util.log.LogHandler
 
 import scala.collection.mutable
@@ -27,9 +29,15 @@ object GraphQL extends App {
   implicit val (url, xa) = PostgresStuff.go()
   implicit val logHandler = LogHandler.jdkLogHandler
 
+  val config = new HikariConfig(
+    "/home/drole/projects/magnolia-testing/server/src/main/resources/application.properties"
+  )
+  config.setJdbcUrl(url)
+  val datasource = new HikariDataSource(config)
+
   @tableName("users") case class User(@id id: Int, name: String, age: Int)
 
-  implicit val userRepo = RepoOps.toRepo[Int, User](RepoOps.gen[User])
+  implicit val userRepo = RepoOps.toRepo2[Int, User](RepoOps.gen[User])(connection = datasource.getConnection)
 
   class Mutation(repo: Repo[Int, User]) {
     @GraphQLField

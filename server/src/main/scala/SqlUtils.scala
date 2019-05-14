@@ -9,18 +9,23 @@ import doobie._
 import doobie.implicits._
 import ru.yandex.qatools.embed.postgresql.EmbeddedPostgres
 import ru.yandex.qatools.embed.postgresql.EmbeddedPostgres._
-import magnolia.{ Param, _ }
+import magnolia.{Param, _}
 import shapeless.tupled._
-import scala.concurrent.duration._
 
+import scala.concurrent.duration._
 import scala.annotation.Annotation
 import scala.language.experimental.macros
 import java.nio.file.Paths
+import java.sql.ResultSet
+import IdType._
 
 import cats.effect.IO
-import doobie.{ LogHandler, Transactor }
-import magnolia.{ CaseClass, Param, SealedTrait, Subtype }
+import doobie.{LogHandler, Transactor}
+import fs2.Stream
+import magnolia.{CaseClass, Param, SealedTrait, Subtype}
 import ru.yandex.qatools.embed.postgresql.EmbeddedPostgres
+
+import scala.collection.mutable.ListBuffer
 object SqlUtils {
   def idTypeString[A](a: A): Option[String] =
     a match {
@@ -110,12 +115,13 @@ object SqlUtils {
                                    tableDescRegular: TableDescRegular,
                                    ctx: CaseClass[Ty, T]): (Param[Ty, T], EntityDesc) = {
     val fieldName         = SqlUtils.findFieldName(param)
+    val tableName = SqlUtils.findTableName(ctx)
     lazy val errorMessage = s"Unable to find description for ${param.label} on class ${ctx.typeName.short}"
     val entitDescForParam = tableDescRegular.additionalColumns
       .find(_.columnName.name == fieldName)
       .map(_.regularValue)
       .orElse(
-        if (tableDescRegular.idColumn.columnName.name == fieldName) Some(IdLeaf(tableDescRegular.idColumn.idValueDesc))
+        if (tableDescRegular.idColumn.columnName.name == fieldName) Some(IdLeaf(tableDescRegular.idColumn.idValueDesc, TableName(tableName), ColumnName(fieldName)))
         else None
       )
       .getOrElse(throw new RuntimeException(errorMessage))
@@ -163,6 +169,130 @@ object SqlUtils {
         case Character(n) => Character(n)
         case UUID         => UUID
       }
+  }
+
+  def extractResultsStream(fields: List[String], resultSet: ResultSet): IO[List[List[AnyRef]]] = {
+    Stream
+      .unfoldEval(resultSet) { result =>
+        if (result.next()) {
+          val pair = (fields.map(f => result.getObject(f)), result)
+          IO(Some(pair))
+        } else {
+          IO(None)
+        }
+
+      }
+      .compile
+      .toList
+  }
+  def extractFieldsImperative(fields: List[String],
+                              resultSet: ResultSet): IO[List[List[AnyRef]]] = {
+    IO {
+      var omfg = new ListBuffer[List[AnyRef]]
+      while (resultSet.next()) {
+        val partial = fields.map(name => resultSet.getObject(name))
+        omfg += partial
+      }
+      omfg.toList
+    }
+  }
+
+  def getJoinList(description: EntityDesc, upstreamTableName: Option[TableName], upstreamColName: Option[ColumnName], stopAtSeq: Boolean = true): List[JoinDescription] = {
+    description match {
+      case TableDescRegular(tableName, idColumn, additionalColumns, referencesConstraint, isSubtypeTable, joinOnFind) =>
+        val ds = additionalColumns.flatMap(col => col.regularValue match {
+          case TableDescRegular(_, _, _, _, _, _) => getJoinList(col.regularValue, Some(tableName), Some(col.columnName))
+          case TableDescSumType(_, _, _, _, _) => getJoinList(col.regularValue, Some(tableName), Some(col.columnName))
+          case TableDescSeqType(_, _, _) => getJoinList(col.regularValue, Some(tableName), Some(idColumn.columnName))
+          case IdLeaf(_, _, _)           => getJoinList(col.regularValue, Some(tableName), Some(col.columnName))
+          case RegularLeaf(_, _, _)      => getJoinList(col.regularValue, Some(tableName), Some(col.columnName))
+        })
+        val fromThis = for {
+          ust <- upstreamTableName
+          usc <- upstreamColName
+        } yield JoinDescription(ust, usc, tableName, idColumn.columnName, LeftJoin)
+
+        List(fromThis).flatten ++ ds
+      case TableDescSumType(tableName, idColumn, subtypeTableNameCol, subType, joinOnFind) =>
+        val ds = subType.flatMap(subType => getJoinList(subType, Some(tableName), Some(idColumn.columnName)))
+        val fromThis = for {
+          ust <- upstreamTableName
+          usc <- upstreamColName
+        } yield JoinDescription(ust, usc, tableName, idColumn.columnName, LeftJoin)
+
+        List(fromThis).flatten ++ ds
+      case TableDescSeqType(tableName, idColumn, entityDesc) =>
+        val colName = entityDesc match {
+          case TableDescRegular(_, idColumn, _, _, _, _) =>
+            idColumn.columnName
+          case TableDescSumType(_, idColumn, _, _, _) =>
+            idColumn.columnName
+          case TableDescSeqType(_, idColumn, _) =>
+            idColumn.columnName
+          case IdLeaf(_, _, columnName)           =>
+            columnName
+          case RegularLeaf(_, _, columnName)      =>
+            columnName
+        }
+        val ds = getJoinList(entityDesc, Some(tableName), Some(colName))
+        val fromThis = for {
+        ust <- upstreamTableName
+        usc <- upstreamColName
+        } yield JoinDescription(ust, usc, tableName, idColumn.columnName, LeftJoin)
+        if(stopAtSeq) Nil
+        else List(fromThis).flatten ++ ds
+      case IdLeaf(idValueDesc, _, _)           =>
+        Nil
+      case RegularLeaf(dataType, _, _)      =>
+        Nil
+    }
+  }
+
+  def getCompleteColumnList(entityDesc: EntityDesc, stopOnSeq: Boolean = true): List[(TableName, ColumnName)] = {
+    def isSeqCol(entityDesc: EntityDesc) = {
+      entityDesc match {
+        case TableDescSeqType(_, _, _) => true
+        case _ => false
+      }
+    }
+    entityDesc match {
+      case TableDescRegular(tableName, idColumn, additionalColumns, _, _, _) =>
+        val colNames = idColumn.columnName :: additionalColumns.filterNot(col => isSeqCol(col.regularValue)).toList.map(_.columnName)
+        val fromThis = colNames.map(tableName -> _)
+        val downStream = additionalColumns.flatMap(col => getCompleteColumnList(col.regularValue))
+        fromThis ++ downStream
+      case TableDescSumType(tableName, idColumn, subtypeTableNameCol, subType, joinOnFind) =>
+        val fromThis = List(tableName -> idColumn.columnName, tableName -> subtypeTableNameCol.columnName)
+        val downStream = subType.toList.flatMap(getCompleteColumnList(_))
+        fromThis ++ downStream
+      case TableDescSeqType(tableName, idColumn, entityDesc) =>
+//        val fromThis = tableName -> idColumn.columnName
+        val downStream = getCompleteColumnList(entityDesc, stopOnSeq)
+        if(stopOnSeq) Nil
+        else downStream
+      case IdLeaf(_, _, _)           =>
+        Nil
+      case RegularLeaf(_,tableName, col)      =>
+        if(stopOnSeq) Nil
+        else List(tableName -> col)
+    }
+  }
+
+  def fullyQualifiedColName(entityDesc: EntityDesc) = {
+    entityDesc match {
+      case IdLeaf(_, tableName, colName)      => s"${tableName.name}${colName.name}"
+      case RegularLeaf(_, tableName, colName) => s"${tableName.name}${colName.name}"
+      case other =>
+        val errorMessage =
+          s"Entity description for was expected to be of type IdLef or RegularLeft, but was $other"
+        throw new RuntimeException(errorMessage)
+    }
+  }
+
+  def joinTypeToStirng(joinType: JoinType) = joinType match {
+    case InnerJoin => "inner join"
+    case LeftJoin  => "left join"
+    case RightJoin => "right join"
   }
 }
 
